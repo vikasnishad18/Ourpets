@@ -58,6 +58,7 @@ async function authPasswordLogin(email, password) {
     method: "POST",
     headers: {
       apikey: anonKey,
+      Authorization: `Bearer ${anonKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ email, password }),
@@ -115,6 +116,185 @@ async function checkIsAdmin(userId, accessToken) {
   if (!res.ok) return { ok: false, isAdmin: false };
   const rows = await res.json();
   return { ok: true, isAdmin: Array.isArray(rows) && rows.length > 0 };
+}
+
+function parseContentRange(value) {
+  // example: "0-19/123"
+  if (!value) return { total: null };
+  const m = String(value).match(/(\d+)\s*-\s*(\d+)\s*\/\s*(\d+|\*)/);
+  if (!m) return { total: null };
+  const total = m[3] === "*" ? null : Number(m[3]);
+  return { total: Number.isFinite(total) ? total : null };
+}
+
+function toIsoDayEnd(dateStr) {
+  // dateStr: YYYY-MM-DD
+  if (!dateStr) return "";
+  return `${dateStr}T23:59:59.999Z`;
+}
+
+function buildQuery(params) {
+  const parts = [];
+  for (const [k, v] of Object.entries(params)) {
+    if (v == null || v === "") continue;
+    parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
+  }
+  return parts.length ? `?${parts.join("&")}` : "";
+}
+
+async function supabaseRest(pathWithQuery, accessToken, options) {
+  const { url, anonKey } = buildSupabaseRestConfig();
+  if (!url || !anonKey) throw new Error("Supabase is not configured. Add keys in config.local.js or admin.html.");
+  const normalizedUrl = url.replace(/\/$/, "");
+  const endpoint = `${normalizedUrl}${pathWithQuery.startsWith("/") ? "" : "/"}${pathWithQuery}`;
+
+  const headers = Object.assign(
+    {
+      apikey: anonKey,
+      Authorization: `Bearer ${accessToken}`,
+    },
+    options && options.headers ? options.headers : {}
+  );
+
+  const res = await fetch(endpoint, Object.assign({}, options, { headers }));
+  return res;
+}
+
+async function fetchInquiries(accessToken, input) {
+  const pageSize = input.pageSize || 20;
+  const offset = (input.page || 0) * pageSize;
+  const order = `${input.sort || "created_at"}.${input.dir || "desc"}`;
+
+  const params = {
+    select: "id,created_at,full_name,phone,email,pet_type,service,preferred_date,message,source",
+    order,
+    limit: pageSize,
+    offset,
+  };
+
+  if (input.from) params.created_at = `gte.${input.from}`;
+  if (input.to) params.created_at = `lte.${toIsoDayEnd(input.to)}`;
+  if (input.service) params.service = `eq.${input.service}`;
+  if (input.pet_type) params.pet_type = `eq.${input.pet_type}`;
+
+  const q = (input.q || "").trim();
+  if (q) {
+    const expr = `(full_name.ilike.*${q}*,email.ilike.*${q}*,phone.ilike.*${q}*,service.ilike.*${q}*)`;
+    params.or = expr;
+  }
+
+  const res = await supabaseRest(`/rest/v1/inquiries${buildQuery(params)}`, accessToken, {
+    method: "GET",
+    headers: { Prefer: "count=exact" },
+  });
+
+  const range = parseContentRange(res.headers.get("content-range"));
+  const t = await res.text();
+  if (!res.ok) return { ok: false, rows: [], total: range.total, message: t || "Could not load inquiries." };
+  let rows = [];
+  try {
+    rows = t ? JSON.parse(t) : [];
+  } catch {
+    rows = [];
+  }
+  return { ok: true, rows: Array.isArray(rows) ? rows : [], total: range.total };
+}
+
+async function fetchUserProfiles(accessToken, input) {
+  const pageSize = input.pageSize || 20;
+  const offset = (input.page || 0) * pageSize;
+  const order = `${input.sort || "updated_at"}.${input.dir || "desc"}`;
+
+  const params = {
+    select: "user_id,phone,created_at,updated_at",
+    order,
+    limit: pageSize,
+    offset,
+  };
+
+  const q = (input.q || "").trim();
+  if (q) {
+    // uuid needs exact match via REST
+    if (/^[0-9a-fA-F-]{32,36}$/.test(q)) params.user_id = `eq.${q}`;
+    else params.phone = `ilike.*${q}*`;
+  }
+  if (input.has_phone === "yes") params.phone = "not.is.null";
+  if (input.has_phone === "no") params.phone = "is.null";
+
+  const res = await supabaseRest(`/rest/v1/user_profiles${buildQuery(params)}`, accessToken, {
+    method: "GET",
+    headers: { Prefer: "count=exact" },
+  });
+
+  const range = parseContentRange(res.headers.get("content-range"));
+  const t = await res.text();
+  if (!res.ok) return { ok: false, rows: [], total: range.total, message: t || "Could not load user profiles." };
+  let rows = [];
+  try {
+    rows = t ? JSON.parse(t) : [];
+  } catch {
+    rows = [];
+  }
+  return { ok: true, rows: Array.isArray(rows) ? rows : [], total: range.total };
+}
+
+async function fetchSessionEvents(accessToken, input) {
+  const pageSize = input.pageSize || 20;
+  const offset = (input.page || 0) * pageSize;
+  const order = `${input.sort || "created_at"}.${input.dir || "desc"}`;
+
+  const params = {
+    select: "id,created_at,user_id,event_type,is_admin,tz,user_agent",
+    order,
+    limit: pageSize,
+    offset,
+  };
+
+  if (input.from) params.created_at = `gte.${input.from}`;
+  if (input.to) params.created_at = `lte.${toIsoDayEnd(input.to)}`;
+  if (input.event_type) params.event_type = `eq.${input.event_type}`;
+  if (input.role === "admin") params.is_admin = "eq.true";
+  if (input.role === "user") params.is_admin = "eq.false";
+
+  const q = (input.user_id || "").trim();
+  if (q && /^[0-9a-fA-F-]{32,36}$/.test(q)) params.user_id = `eq.${q}`;
+
+  const res = await supabaseRest(`/rest/v1/user_session_events${buildQuery(params)}`, accessToken, {
+    method: "GET",
+    headers: { Prefer: "count=exact" },
+  });
+
+  const range = parseContentRange(res.headers.get("content-range"));
+  const t = await res.text();
+  if (!res.ok) return { ok: false, rows: [], total: range.total, message: t || "Could not load session events." };
+  let rows = [];
+  try {
+    rows = t ? JSON.parse(t) : [];
+  } catch {
+    rows = [];
+  }
+  return { ok: true, rows: Array.isArray(rows) ? rows : [], total: range.total };
+}
+
+function downloadCsv(filename, rows, columns) {
+  const cols = columns && columns.length ? columns : rows.length ? Object.keys(rows[0]) : [];
+  const esc = (v) => {
+    const s = v == null ? "" : String(v);
+    const needs = /[\",\n]/.test(s);
+    const out = s.replace(/\"/g, "\"\"");
+    return needs ? `"${out}"` : out;
+  };
+  const lines = [];
+  lines.push(cols.map(esc).join(","));
+  for (const r of rows) lines.push(cols.map((c) => esc(r[c])).join(","));
+  const csv = lines.join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 async function fetchAllServices(accessToken) {
@@ -219,6 +399,17 @@ function AdminApp() {
   const [session, setSession] = useState(() => loadSession());
   const [user, setUser] = useState(null);
   const [services, setServices] = useState([]);
+  const [activeTab, setActiveTab] = useState("services"); // services | inquiries | users | sessions
+
+  const [inq, setInq] = useState({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
+  const [inqFilters, setInqFilters] = useState({ q: "", service: "", pet_type: "", from: "", to: "", dir: "desc" });
+
+  const [users, setUsers] = useState({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
+  const [userFilters, setUserFilters] = useState({ q: "", has_phone: "", dir: "desc" });
+
+  const [sessions, setSessions] = useState({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
+  const [sessionFilters, setSessionFilters] = useState({ user_id: "", event_type: "", role: "", from: "", to: "", dir: "desc" });
+
   const [toast, setToast] = useState({ kind: "idle", text: "" });
   const [busy, setBusy] = useState(false);
 
@@ -264,9 +455,76 @@ function AdminApp() {
         setServices(s.services);
       }
 
+      setActiveTab("services");
       setMode("app");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function loadInquiries(next) {
+    if (!session) return;
+    setInq((s) => ({ ...s, loading: true }));
+    try {
+      const res = await fetchInquiries(session.access_token, Object.assign({}, inqFilters, next));
+      if (!res.ok) {
+        setToast({ kind: "err", text: res.message || "Could not load inquiries." });
+        setInq((s) => ({ ...s, rows: [], total: res.total || null, loading: false }));
+        return;
+      }
+      setInq((s) => ({
+        ...s,
+        rows: res.rows,
+        total: res.total,
+        page: next && typeof next.page === "number" ? next.page : s.page,
+        loading: false,
+      }));
+    } finally {
+      setInq((s) => ({ ...s, loading: false }));
+    }
+  }
+
+  async function loadUsers(next) {
+    if (!session) return;
+    setUsers((s) => ({ ...s, loading: true }));
+    try {
+      const res = await fetchUserProfiles(session.access_token, Object.assign({}, userFilters, next));
+      if (!res.ok) {
+        setToast({ kind: "err", text: res.message || "Could not load users." });
+        setUsers((s) => ({ ...s, rows: [], total: res.total || null, loading: false }));
+        return;
+      }
+      setUsers((s) => ({
+        ...s,
+        rows: res.rows,
+        total: res.total,
+        page: next && typeof next.page === "number" ? next.page : s.page,
+        loading: false,
+      }));
+    } finally {
+      setUsers((s) => ({ ...s, loading: false }));
+    }
+  }
+
+  async function loadSessions(next) {
+    if (!session) return;
+    setSessions((s) => ({ ...s, loading: true }));
+    try {
+      const res = await fetchSessionEvents(session.access_token, Object.assign({}, sessionFilters, next));
+      if (!res.ok) {
+        setToast({ kind: "err", text: res.message || "Could not load sessions." });
+        setSessions((s) => ({ ...s, rows: [], total: res.total || null, loading: false }));
+        return;
+      }
+      setSessions((s) => ({
+        ...s,
+        rows: res.rows,
+        total: res.total,
+        page: next && typeof next.page === "number" ? next.page : s.page,
+        loading: false,
+      }));
+    } finally {
+      setSessions((s) => ({ ...s, loading: false }));
     }
   }
 
@@ -309,26 +567,69 @@ function AdminApp() {
     setSession(null);
     setUser(null);
     setServices([]);
+    setActiveTab("services");
+    setInq({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
+    setUsers({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
+    setSessions({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
     setMode("login");
     setToast({ kind: "ok", text: "Logged out." });
   }
 
   async function onReload() {
     if (!session) return;
-    setBusy(true);
-    setToast({ kind: "idle", text: "" });
-    try {
-      const s = await fetchAllServices(session.access_token);
-      if (!s.ok) {
-        setToast({ kind: "err", text: s.message || "Could not load services." });
-        return;
+    if (activeTab === "services") {
+      setBusy(true);
+      setToast({ kind: "idle", text: "" });
+      try {
+        const s = await fetchAllServices(session.access_token);
+        if (!s.ok) {
+          setToast({ kind: "err", text: s.message || "Could not load services." });
+          return;
+        }
+        setServices(s.services);
+        setToast({ kind: "ok", text: "Services refreshed." });
+      } finally {
+        setBusy(false);
       }
-      setServices(s.services);
-      setToast({ kind: "ok", text: "Services refreshed." });
-    } finally {
-      setBusy(false);
+      return;
     }
+    if (activeTab === "inquiries") await loadInquiries({ page: inq.page, pageSize: inq.pageSize });
+    if (activeTab === "users") await loadUsers({ page: users.page, pageSize: users.pageSize });
+    if (activeTab === "sessions") await loadSessions({ page: sessions.page, pageSize: sessions.pageSize });
   }
+
+  function onExportCsv() {
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    if (activeTab === "inquiries") downloadCsv(`ourpets-inquiries-${stamp}.csv`, inq.rows, [
+      "created_at",
+      "full_name",
+      "phone",
+      "email",
+      "pet_type",
+      "service",
+      "preferred_date",
+      "message",
+      "source",
+    ]);
+    if (activeTab === "users") downloadCsv(`ourpets-users-${stamp}.csv`, users.rows, ["user_id", "phone", "created_at", "updated_at"]);
+    if (activeTab === "sessions") downloadCsv(`ourpets-sessions-${stamp}.csv`, sessions.rows, [
+      "created_at",
+      "user_id",
+      "event_type",
+      "is_admin",
+      "tz",
+      "user_agent",
+    ]);
+  }
+
+  useEffect(() => {
+    if (mode !== "app") return;
+    if (!session) return;
+    if (activeTab === "inquiries" && !inq.rows.length) loadInquiries({ page: 0, pageSize: inq.pageSize });
+    if (activeTab === "users" && !users.rows.length) loadUsers({ page: 0, pageSize: users.pageSize });
+    if (activeTab === "sessions" && !sessions.rows.length) loadSessions({ page: 0, pageSize: sessions.pageSize });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, mode]);
 
   function updateLocalService(id, key, value) {
     setServices((rows) =>

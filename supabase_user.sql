@@ -23,6 +23,13 @@ for select
 to authenticated
 using (user_id = auth.uid());
 
+drop policy if exists "admins can read profiles" on public.user_profiles;
+create policy "admins can read profiles"
+on public.user_profiles
+for select
+to authenticated
+using (exists (select 1 from public.admin_users au where au.user_id = auth.uid()));
+
 drop policy if exists "users can insert own profile" on public.user_profiles;
 create policy "users can insert own profile"
 on public.user_profiles
@@ -60,10 +67,16 @@ for select
 to authenticated
 using (user_id = auth.uid());
 
+drop policy if exists "admins can read session events" on public.user_session_events;
+create policy "admins can read session events"
+on public.user_session_events
+for select
+to authenticated
+using (exists (select 1 from public.admin_users au where au.user_id = auth.uid()));
+
 drop policy if exists "users can insert own session events" on public.user_session_events;
 create policy "users can insert own session events"
 on public.user_session_events
 for insert
 to authenticated
 with check (user_id = auth.uid());
-

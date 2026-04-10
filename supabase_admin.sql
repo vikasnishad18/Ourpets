@@ -49,6 +49,14 @@ for select
 to anon, authenticated
 using (is_active = true);
 
+-- Admins can read inquiries (contact/booking submissions)
+drop policy if exists "admins can read inquiries" on public.inquiries;
+create policy "admins can read inquiries"
+on public.inquiries
+for select
+to authenticated
+using (exists (select 1 from public.admin_users au where au.user_id = auth.uid()));
+
 -- Admins can read ALL services (including inactive)
 drop policy if exists "admins can read services" on public.services;
 create policy "admins can read services"
