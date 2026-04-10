@@ -24,6 +24,25 @@ function buildSupabaseRestConfig() {
   return { url, anonKey };
 }
 
+async function fetchPublicServices() {
+  const { url, anonKey } = buildSupabaseRestConfig();
+  if (!url || !anonKey) return { ok: false, services: null };
+
+  const normalizedUrl = url.replace(/\/$/, "");
+  const endpoint = `${normalizedUrl}/rest/v1/services?select=id,title,description,icon,sort_order&is_active=eq.true&order=sort_order.asc`;
+  const res = await fetch(endpoint, {
+    method: "GET",
+    headers: {
+      apikey: anonKey,
+      Authorization: `Bearer ${anonKey}`,
+    },
+  });
+
+  if (!res.ok) return { ok: false, services: null };
+  const data = await res.json();
+  return { ok: true, services: Array.isArray(data) ? data : null };
+}
+
 async function submitInquiry(payload) {
   const { url, anonKey } = buildSupabaseRestConfig();
   if (!url || !anonKey) {
@@ -68,41 +87,25 @@ async function submitInquiry(payload) {
 }
 
 function App() {
-  const services = useMemo(
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem("ourpets_theme") || "pastel";
+    } catch {
+      return "pastel";
+    }
+  });
+
+  const fallbackServices = useMemo(
     () => [
-      {
-        title: "Gentle Grooming",
-        desc: "Bath, brush, trim - with treats, calm music, and cozy towels.",
-        accent: "pink",
-        icon: (
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M7.5 2a2.5 2.5 0 0 0-2.45 3 5.5 5.5 0 0 0-1.05 3.25V12a5 5 0 0 0 3 4.58V20a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-3.42A5 5 0 0 0 20 12V8.25A5.5 5.5 0 0 0 18.95 5a2.5 2.5 0 1 0-4.57-2.3A6 6 0 0 0 12 2c-.9 0-1.75.2-2.5.56A2.49 2.49 0 0 0 7.5 2Zm3 2.5c.47-.18.98-.28 1.5-.28.64 0 1.25.14 1.8.4a1.1 1.1 0 0 0 1.52-.64 1.26 1.26 0 1 1 2.4.83 1.1 1.1 0 0 0 .33 1.24A3.27 3.27 0 0 1 18 8.25V12a3 3 0 0 1-1.9 2.79 1.1 1.1 0 0 0-.7 1.02V20h-6v-4.19a1.1 1.1 0 0 0-.7-1.02A3 3 0 0 1 6 12V8.25c0-.86.33-1.64.87-2.22a1.1 1.1 0 0 0 .32-1.05A1.26 1.26 0 0 1 7.5 3.2a1.26 1.26 0 0 1 1.2.86 1.1 1.1 0 0 0 1.8.44Z" />
-          </svg>
-        ),
-      },
-      {
-        title: "Vet-Friendly Essentials",
-        desc: "Care products chosen for sensitive skin and waggy comfort.",
-        accent: "sky",
-        icon: (
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M10 2a1 1 0 0 0-1 1v2H7a1 1 0 0 0-1 1v2H4a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h2v2a1 1 0 0 0 1 1h2v2a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-2h2a1 1 0 0 0 1-1v-2h2a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1h-2V6a1 1 0 0 0-1-1h-2V3a1 1 0 0 0-1-1h-4Zm1 2h2v2a1 1 0 0 0 1 1h2v2a1 1 0 0 0 1 1h2v2h-2a1 1 0 0 0-1 1v2h-2a1 1 0 0 0-1 1v2h-2v-2a1 1 0 0 0-1-1H7v-2a1 1 0 0 0-1-1H4v-2h2a1 1 0 0 0 1-1V7h2a1 1 0 0 0 1-1V4Z" />
-          </svg>
-        ),
-      },
-      {
-        title: "Happy Training",
-        desc: "Tiny steps, big cheers - positive reinforcement starter sessions.",
-        accent: "mint",
-        icon: (
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 2a5 5 0 0 1 5 5c0 2.24-1.48 4.14-3.52 4.76L14 20a2 2 0 0 1-2 2h0a2 2 0 0 1-2-2l.52-8.24A5.01 5.01 0 0 1 7 7a5 5 0 0 1 5-5Zm0 2a3 3 0 0 0-3 3c0 1.21.72 2.24 1.76 2.72a1.1 1.1 0 0 1 .64 1.08L12 20h0l.6-9.2a1.1 1.1 0 0 1 .64-1.08A3 3 0 0 0 15 7a3 3 0 0 0-3-3Z" />
-          </svg>
-        ),
-      },
+      { title: "Gentle Grooming", description: "Bath, brush, trim - with treats, calm music, and cozy towels.", icon: "grooming" },
+      { title: "Vet-Friendly Essentials", description: "Care products chosen for sensitive skin and waggy comfort.", icon: "medical" },
+      { title: "Happy Training", description: "Tiny steps, big cheers - positive reinforcement starter sessions.", icon: "training" },
     ],
     []
   );
+
+  const [services, setServices] = useState(fallbackServices);
+  const [servicesFromDb, setServicesFromDb] = useState(false);
 
   const products = useMemo(
     () => [
@@ -112,6 +115,20 @@ function App() {
     ],
     []
   );
+
+  const tips = useMemo(
+    () => [
+      { title: "Quick Grooming Tip", text: "Brush 3–5 minutes daily to reduce shedding and keep coats shiny." },
+      { title: "Hydration Tip", text: "Fresh water + a clean bowl every day helps energy and digestion." },
+      { title: "Training Tip", text: "Reward the exact moment your pet does the right thing (tiny treats work best)." },
+      { title: "Comfort Tip", text: "A familiar blanket can reduce stress during grooming or travel." },
+      { title: "Paw Care Tip", text: "Check paws after walks for tiny stones, hot surfaces, or dryness." },
+    ],
+    []
+  );
+
+  const [tipIndex, setTipIndex] = useState(() => Math.floor(Math.random() * tips.length));
+  const [productQuery, setProductQuery] = useState("");
 
   const [form, setForm] = useState({
     full_name: "",
@@ -139,6 +156,40 @@ function App() {
     }
     return { configured, host };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await fetchPublicServices();
+        if (cancelled) return;
+        if (result.ok && result.services && result.services.length) {
+          setServices(result.services);
+          setServicesFromDb(true);
+        } else {
+          setServices(fallbackServices);
+          setServicesFromDb(false);
+        }
+      } catch {
+        if (cancelled) return;
+        setServices(fallbackServices);
+        setServicesFromDb(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fallbackServices]);
+
+  useEffect(() => {
+    const night = theme === "night";
+    document.body.classList.toggle("theme-night", night);
+    try {
+      localStorage.setItem("ourpets_theme", theme);
+    } catch {
+      // ignore
+    }
+  }, [theme]);
 
   function updateField(key, value) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -191,6 +242,27 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  const filteredProducts = useMemo(() => {
+    const q = productQuery.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter((p) => (p.name + " " + p.note).toLowerCase().includes(q));
+  }, [productQuery, products]);
+
+  async function copyTip() {
+    const t = tips[tipIndex];
+    const text = `${t.title}: ${t.text}`;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        setStatus({ kind: "ok", text: "Tip copied to clipboard." });
+        return;
+      }
+    } catch {
+      // ignore
+    }
+    setStatus({ kind: "err", text: "Could not copy on this browser. You can manually select the text." });
+  }
+
   return (
     <div>
       <header className="topbar">
@@ -210,9 +282,15 @@ function App() {
             <a className="chip" href="#products" onClick={(e) => (e.preventDefault(), scrollToId("products"))}>
               Products
             </a>
+            <a className="chip" href="#tips" onClick={(e) => (e.preventDefault(), scrollToId("tips"))}>
+              Tips
+            </a>
             <a className="chip" href="#contact" onClick={(e) => (e.preventDefault(), scrollToId("contact"))}>
               Contact
             </a>
+            <button className="chip" type="button" onClick={() => setTheme((t) => (t === "night" ? "pastel" : "night"))}>
+              {theme === "night" ? "Pastel" : "Night"}
+            </button>
             <button className="chip primary" onClick={() => scrollToId("contact")}>
               Book a Visit
             </button>
@@ -283,22 +361,34 @@ function App() {
                 <small>Care that feels like a warm hug (but for pets).</small>
               </h2>
               <span className="pill">
-                <span className="dot pink" aria-hidden="true"></span> Gentle &amp; friendly
+                <span className="dot pink" aria-hidden="true"></span> {servicesFromDb ? "Editable (Admin)" : "Demo data"}
               </span>
             </div>
 
             <div className="grid" role="list">
-              {services.map((s, index) => {
-                const imageNames = ['p1.png.png', 'p2.png.png', 'p3.png.png'];
-                return (
-                  <div className="card" role="listitem" key={s.title}>
-                    <Icon>{s.icon}</Icon>
-                    <img src={`images/${imageNames[index]}`} alt={`${s.title} illustration`} style={{width: '100%', borderRadius: '8px', marginBottom: '10px'}} />
-                    <h3>{s.title}</h3>
-                    <p>{s.desc}</p>
-                  </div>
-                );
-              })}
+              {services.map((s) => (
+                <div className="card" role="listitem" key={s.id || s.title}>
+                  <Icon>
+                    {s.icon === "grooming" ? (
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M7.5 2a2.5 2.5 0 0 0-2.45 3 5.5 5.5 0 0 0-1.05 3.25V12a5 5 0 0 0 3 4.58V20a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-3.42A5 5 0 0 0 20 12V8.25A5.5 5.5 0 0 0 18.95 5a2.5 2.5 0 1 0-4.57-2.3A6 6 0 0 0 12 2c-.9 0-1.75.2-2.5.56A2.49 2.49 0 0 0 7.5 2Zm3 2.5c.47-.18.98-.28 1.5-.28.64 0 1.25.14 1.8.4a1.1 1.1 0 0 0 1.52-.64 1.26 1.26 0 1 1 2.4.83 1.1 1.1 0 0 0 .33 1.24A3.27 3.27 0 0 1 18 8.25V12a3 3 0 0 1-1.9 2.79 1.1 1.1 0 0 0-.7 1.02V20h-6v-4.19a1.1 1.1 0 0 0-.7-1.02A3 3 0 0 1 6 12V8.25c0-.86.33-1.64.87-2.22a1.1 1.1 0 0 0 .32-1.05A1.26 1.26 0 0 1 7.5 3.2a1.26 1.26 0 0 1 1.2.86 1.1 1.1 0 0 0 1.8.44Z" />
+                      </svg>
+                    ) : s.icon === "medical" ? (
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M10 2a1 1 0 0 0-1 1v2H7a1 1 0 0 0-1 1v2H4a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h2v2a1 1 0 0 0 1 1h2v2a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-2h2a1 1 0 0 0 1-1v-2h2a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1h-2V6a1 1 0 0 0-1-1h-2V3a1 1 0 0 0-1-1h-4Zm1 2h2v2a1 1 0 0 0 1 1h2v2a1 1 0 0 0 1 1h2v2h-2a1 1 0 0 0-1 1v2h-2a1 1 0 0 0-1 1v2h-2v-2a1 1 0 0 0-1-1H7v-2a1 1 0 0 0-1-1H4v-2h2a1 1 0 0 0 1-1V7h2a1 1 0 0 0 1-1V4Z" />
+                      </svg>
+                    ) : s.icon === "training" ? (
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 2a5 5 0 0 1 5 5c0 2.24-1.48 4.14-3.52 4.76L14 20a2 2 0 0 1-2 2h0a2 2 0 0 1-2-2l.52-8.24A5.01 5.01 0 0 1 7 7a5 5 0 0 1 5-5Zm0 2a3 3 0 0 0-3 3c0 1.21.72 2.24 1.76 2.72a1.1 1.1 0 0 1 .64 1.08L12 20h0l.6-9.2a1.1 1.1 0 0 1 .64-1.08A3 3 0 0 0 15 7a3 3 0 0 0-3-3Z" />
+                      </svg>
+                    ) : (
+                      <PawIcon />
+                    )}
+                  </Icon>
+                  <h3>{s.title}</h3>
+                  <p>{s.description || s.desc}</p>
+                </div>
+              ))}
             </div>
           </div>
         </section>
@@ -316,14 +406,30 @@ function App() {
             </div>
 
             <div className="grid" role="list">
-              {products.map((p, index) => {
-                const imageNames = ['p4.png.png', 'p5.png.png', 'p6.png.png'];
+              <div className="full search-row">
+                <label style={{ display: "grid", gap: 6 }}>
+                  Quick search
+                  <input
+                    value={productQuery}
+                    onChange={(e) => setProductQuery(e.target.value)}
+                    placeholder="Search brush, balm, collar…"
+                  />
+                </label>
+                <span className="notice">{filteredProducts.length} items</span>
+              </div>
+
+              {filteredProducts.map((p, index) => {
+                const imageNames = ["p4.png", "p5.png", "p6.png"];
                 return (
                   <div className="card" role="listitem" key={p.name}>
                     <Icon>
                       <PawIcon />
                     </Icon>
-                    <img src={`images/${imageNames[index]}`} alt={`${p.name} product image`} style={{width: '100%', borderRadius: '8px', marginBottom: '10px'}} />
+                    <img
+                      src={`images/${imageNames[index % imageNames.length]}`}
+                      alt={`${p.name} product image`}
+                      style={{ width: "100%", borderRadius: "8px", marginBottom: "10px" }}
+                    />
                     <h3 style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
                       <span>{p.name}</span>
                       <span style={{ color: "#b93b69", fontWeight: 900 }}>{p.price}</span>
@@ -332,6 +438,41 @@ function App() {
                   </div>
                 );
               })}
+            </div>
+          </div>
+        </section>
+
+        <section className="section" id="tips">
+          <div className="container">
+            <div className="section-header">
+              <h2 className="h2">
+                Pet Care Tips
+                <small>Small habits that make pets happier.</small>
+              </h2>
+              <span className="pill">
+                <span className="dot" aria-hidden="true"></span> Shareable
+              </span>
+            </div>
+
+            <div className="panel form">
+              <div className="mini-card">
+                <p className="mini-title">
+                  {tips[tipIndex].title} <span className="tag">Today</span>
+                </p>
+                <p className="mini-desc">{tips[tipIndex].text}</p>
+                <div className="cta-row" style={{ marginTop: 10 }}>
+                  <button className="btn primary" type="button" onClick={() => setTipIndex((i) => (i + 1) % tips.length)}>
+                    Next tip
+                  </button>
+                  <button className="btn" type="button" onClick={() => setTipIndex(Math.floor(Math.random() * tips.length))}>
+                    Surprise me
+                  </button>
+                  <button className="btn" type="button" onClick={copyTip}>
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <p className="notice">Use this section during client demo to show “value content” beyond products.</p>
             </div>
           </div>
         </section>
@@ -530,6 +671,27 @@ function App() {
           </div>
         </footer>
       </main>
+
+      <div className="fab-stack" aria-label="Quick actions">
+        <a
+          className="fab"
+          href="https://wa.me/919800000000"
+          target="_blank"
+          rel="noreferrer"
+          title="WhatsApp (demo)"
+          aria-label="WhatsApp (demo)"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2a10 10 0 0 0-8.6 15.08L2 22l5.06-1.33A10 10 0 1 0 12 2Zm0 2a8 8 0 0 1 0 16c-1.26 0-2.46-.3-3.54-.86l-.38-.2-2.99.78.8-2.9-.22-.39A7.96 7.96 0 0 1 4 12a8 8 0 0 1 8-8Zm-3.4 4.7c-.18 0-.46.06-.7.33-.23.27-.9.88-.9 2.15s.93 2.5 1.06 2.67c.13.18 1.8 2.9 4.45 3.95 2.2.87 2.65.7 3.13.66.48-.04 1.56-.64 1.78-1.26.22-.62.22-1.16.15-1.27-.06-.11-.24-.18-.5-.31-.27-.13-1.56-.77-1.8-.86-.24-.09-.42-.13-.6.13-.18.27-.68.86-.84 1.04-.15.18-.3.2-.57.07-.27-.13-1.12-.41-2.13-1.3-.79-.7-1.33-1.56-1.49-1.82-.15-.27-.02-.41.12-.55.12-.12.27-.3.4-.46.13-.15.18-.27.27-.44.09-.18.04-.33-.02-.46-.07-.13-.6-1.46-.82-2-.22-.53-.44-.46-.6-.47Z" />
+          </svg>
+        </a>
+        <button className="fab" type="button" onClick={() => scrollToId("top")} title="Back to top" aria-label="Back to top">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 5.83 5.4 12.42a1 1 0 1 1-1.4-1.42l7.3-7.3a1 1 0 0 1 1.4 0l7.3 7.3a1 1 0 0 1-1.4 1.42L12 5.83Z" />
+            <path d="M12 10.83 5.4 17.42a1 1 0 1 1-1.4-1.42l7.3-7.3a1 1 0 0 1 1.4 0l7.3 7.3a1 1 0 0 1-1.4 1.42L12 10.83Z" />
+          </svg>
+        </button>
+      </div>
     </div>
   );
 }

@@ -33,6 +33,81 @@ body {
   overflow-x: hidden;
 }
 
+body.theme-night {
+  --bg: #0f1220;
+  --card: rgba(20, 24, 40, 0.72);
+  --text: #f6f7fb;
+  --muted: rgba(246, 247, 251, 0.72);
+  --ring: rgba(99, 179, 255, 0.35);
+  --shadow: 0 18px 45px rgba(0, 0, 0, 0.45);
+  --shadow-soft: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+
+body.theme-night .topbar {
+  background: rgba(15, 18, 32, 0.72);
+  border-bottom: 1px solid rgba(99, 179, 255, 0.18);
+}
+
+body.theme-night .bg {
+  opacity: 0.35;
+  mix-blend-mode: screen;
+}
+
+.fab-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: grid;
+  gap: 10px;
+  z-index: 60;
+}
+
+.fab {
+  width: 48px;
+  height: 48px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(31, 36, 48, 0.12);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 16px 30px rgba(31, 36, 48, 0.14);
+  cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+body.theme-night .fab {
+  border-color: rgba(246, 247, 251, 0.12);
+  background: rgba(20, 24, 40, 0.82);
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.42);
+}
+
+.fab:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 36px rgba(31, 36, 48, 0.18);
+}
+
+.fab svg {
+  width: 22px;
+  height: 22px;
+  fill: #1f2430;
+}
+
+body.theme-night .fab svg {
+  fill: #f6f7fb;
+}
+
+.search-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.search-row input {
+  max-width: 340px;
+}
+
 .bg {
   position: fixed;
   inset: 0;
@@ -475,6 +550,61 @@ textarea:focus {
   background: rgba(255, 107, 154, 0.14);
 }
 
+.btn.danger {
+  background: rgba(255, 107, 154, 0.16);
+}
+
+.btn.danger:hover {
+  box-shadow: 0 12px 22px rgba(255, 107, 154, 0.18);
+}
+
+.admin-table-wrap {
+  overflow: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(31, 36, 48, 0.08);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 820px;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 10px;
+  border-bottom: 1px solid rgba(31, 36, 48, 0.08);
+  vertical-align: top;
+}
+
+.admin-table th {
+  position: sticky;
+  top: 0;
+  background: rgba(255, 247, 251, 0.92);
+  backdrop-filter: blur(10px);
+  text-align: left;
+  font-size: 12px;
+  letter-spacing: 0.2px;
+  color: var(--muted);
+}
+
+.admin-table td input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
+.admin-table td textarea {
+  min-height: 86px;
+}
+
+.admin-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .footer {
   padding: 28px 0 44px;
   color: var(--muted);
@@ -517,4 +647,3 @@ textarea:focus {
   background: var(--sky);
   box-shadow: 0 0 0 6px rgba(99, 179, 255, 0.16);
 }
-
