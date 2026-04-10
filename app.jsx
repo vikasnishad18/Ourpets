@@ -19,9 +19,178 @@ function scrollToId(id) {
 }
 
 function buildSupabaseRestConfig() {
-  const url = (window.OURPETS_SUPABASE_URL || "https://sbiwiyfashlmmxokhjlp.supabase.co").trim();
-  const anonKey = (window.OURPETS_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNiaXdpeWZhc2hsbW14b2toamxwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MjQ0NTMsImV4cCI6MjA5MTMwMDQ1M30.VB4YV-7O7hPb22ehqe3oYo_3JbWL1kW1mKJH4_mes5Y").trim();
+  const url = (window.OURPETS_SUPABASE_URL || "").trim();
+  const anonKey = (window.OURPETS_SUPABASE_ANON_KEY || "").trim();
   return { url, anonKey };
+}
+
+const ADMIN_SESSION_STORAGE_KEY = "ourpets_admin_session_v1";
+
+function loadAdminSession() {
+  try {
+    const raw = localStorage.getItem(ADMIN_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.access_token || !parsed.user) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveAdminSession(session) {
+  localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, JSON.stringify(session));
+}
+
+function clearAdminSession() {
+  localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+}
+
+async function supabaseRequest(pathAndQuery, options) {
+  const { url, anonKey } = buildSupabaseRestConfig();
+  if (!url || !anonKey) throw new Error("Supabase is not configured. Add keys in config.local.js.");
+  const normalizedUrl = url.replace(/\/$/, "");
+  const endpoint = `${normalizedUrl}${pathAndQuery.startsWith("/") ? "" : "/"}${pathAndQuery}`;
+  const headers = Object.assign({ apikey: anonKey }, options && options.headers ? options.headers : {});
+  const res = await fetch(endpoint, Object.assign({}, options, { headers }));
+  return res;
+}
+
+async function authPasswordLogin(email, password) {
+  const { url, anonKey } = buildSupabaseRestConfig();
+  if (!url || !anonKey) return { ok: false, message: "Supabase is not configured. Add keys in config.local.js." };
+
+  const normalizedUrl = url.replace(/\/$/, "");
+  const endpoint = `${normalizedUrl}/auth/v1/token?grant_type=password`;
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+
+  if (!res.ok) {
+    const msg = (data && (data.error_description || data.msg || data.message)) || text || "Login failed.";
+    return { ok: false, message: msg };
+  }
+  if (!data || !data.access_token || !data.user) return { ok: false, message: "Unexpected login response." };
+  return { ok: true, session: data };
+}
+
+async function authSignUp(email, password) {
+  const { url, anonKey } = buildSupabaseRestConfig();
+  if (!url || !anonKey) return { ok: false, message: "Supabase is not configured. Add keys in config.local.js." };
+
+  const normalizedUrl = url.replace(/\/$/, "");
+  const endpoint = `${normalizedUrl}/auth/v1/signup`;
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+
+  if (!res.ok) {
+    const msg = (data && (data.error_description || data.msg || data.message)) || text || "Sign up failed.";
+    return { ok: false, message: msg };
+  }
+
+  // Supabase may return { user, session } or { user, session: null } depending on email confirmation settings.
+  return { ok: true, data };
+}
+
+async function authGetUser(accessToken) {
+  const { url, anonKey } = buildSupabaseRestConfig();
+  if (!url || !anonKey) return { ok: false, user: null };
+  const normalizedUrl = url.replace(/\/$/, "");
+  const endpoint = `${normalizedUrl}/auth/v1/user`;
+  const res = await fetch(endpoint, {
+    method: "GET",
+    headers: { apikey: anonKey, Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) return { ok: false, user: null };
+  const user = await res.json();
+  return { ok: true, user };
+}
+
+async function checkIsAdmin(userId, accessToken) {
+  const { url, anonKey } = buildSupabaseRestConfig();
+  if (!url || !anonKey) return { ok: false, isAdmin: false };
+  const normalizedUrl = url.replace(/\/$/, "");
+  const endpoint = `${normalizedUrl}/rest/v1/admin_users?select=user_id&user_id=eq.${encodeURIComponent(userId)}&limit=1`;
+  const res = await fetch(endpoint, {
+    method: "GET",
+    headers: { apikey: anonKey, Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) return { ok: false, isAdmin: false };
+  const rows = await res.json();
+  return { ok: true, isAdmin: Array.isArray(rows) && rows.length > 0 };
+}
+
+async function logSessionEvent(accessToken, payload) {
+  const res = await supabaseRequest("/rest/v1/user_session_events", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    // best effort: don’t block login
+    return { ok: false };
+  }
+  return { ok: true };
+}
+
+async function upsertUserProfile(accessToken, row) {
+  const res = await supabaseRequest("/rest/v1/user_profiles", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify(row),
+  });
+  if (!res.ok) return { ok: false, message: await res.text() };
+  return { ok: true };
+}
+
+async function fetchUserProfile(accessToken, userId) {
+  const res = await supabaseRequest(`/rest/v1/user_profiles?select=user_id,phone&user_id=eq.${encodeURIComponent(userId)}&limit=1`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) return { ok: false, profile: null };
+  const rows = await res.json();
+  return { ok: true, profile: Array.isArray(rows) && rows[0] ? rows[0] : null };
+}
+
+async function fetchSessionEvents(accessToken, limit) {
+  const lim = typeof limit === "number" ? limit : 10;
+  const res = await supabaseRequest(`/rest/v1/user_session_events?select=id,created_at,event_type,is_admin,tz&order=created_at.desc&limit=${encodeURIComponent(lim)}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) return { ok: false, events: [] };
+  const rows = await res.json();
+  return { ok: true, events: Array.isArray(rows) ? rows : [] };
 }
 
 async function fetchPublicServices() {
@@ -129,6 +298,21 @@ function App() {
 
   const [tipIndex, setTipIndex] = useState(() => Math.floor(Math.random() * tips.length));
   const [productQuery, setProductQuery] = useState("");
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState("login"); // login | signup
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authPassword2, setAuthPassword2] = useState("");
+  const [authPhone, setAuthPhone] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authUser, setAuthUser] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [authToast, setAuthToast] = useState({ kind: "idle", text: "" });
+  const [authSession, setAuthSession] = useState(() => loadAdminSession());
+
+  const [profilePhone, setProfilePhone] = useState("");
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [events, setEvents] = useState([]);
 
   const [form, setForm] = useState({
     full_name: "",
@@ -155,6 +339,37 @@ function App() {
       }
     }
     return { configured, host };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const sess = loadAdminSession();
+      if (!sess) return;
+      setAuthSession(sess);
+
+      const who = await authGetUser(sess.access_token);
+      if (cancelled) return;
+      if (!who.ok || !who.user) {
+        clearAdminSession();
+        setAuthSession(null);
+        return;
+      }
+      setAuthUser(who.user);
+
+      const adminCheck = await checkIsAdmin(who.user.id, sess.access_token);
+      if (cancelled) return;
+      setIsAdmin(!!(adminCheck.ok && adminCheck.isAdmin));
+
+      const p = await fetchUserProfile(sess.access_token, who.user.id);
+      if (!cancelled && p.ok && p.profile && p.profile.phone) setProfilePhone(p.profile.phone);
+
+      const ev = await fetchSessionEvents(sess.access_token, 10);
+      if (!cancelled && ev.ok) setEvents(ev.events);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -236,11 +451,16 @@ function App() {
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === "Escape") setStatus({ kind: "idle", text: "" });
+      if (e.key !== "Escape") return;
+      if (authOpen) {
+        setAuthOpen(false);
+        return;
+      }
+      setStatus({ kind: "idle", text: "" });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [authOpen]);
 
   const filteredProducts = useMemo(() => {
     const q = productQuery.trim().toLowerCase();
@@ -261,6 +481,165 @@ function App() {
       // ignore
     }
     setStatus({ kind: "err", text: "Could not copy on this browser. You can manually select the text." });
+  }
+
+  async function onAuthSubmit(e) {
+    e.preventDefault();
+    if (authBusy) return;
+    setAuthBusy(true);
+    setAuthToast({ kind: "idle", text: "" });
+    try {
+      const email = authEmail.trim();
+      if (!email) {
+        setAuthToast({ kind: "err", text: "Please enter your email." });
+        return;
+      }
+      if (!authPassword || authPassword.length < 6) {
+        setAuthToast({ kind: "err", text: "Password must be at least 6 characters." });
+        return;
+      }
+
+      let session = null;
+
+      if (authMode === "signup") {
+        if (authPassword !== authPassword2) {
+          setAuthToast({ kind: "err", text: "Passwords do not match." });
+          return;
+        }
+        const result = await authSignUp(email, authPassword);
+        if (!result.ok) {
+          setAuthToast({ kind: "err", text: result.message });
+          return;
+        }
+        session = result.data && result.data.session ? result.data.session : null;
+        if (!session) {
+          setAuthToast({
+            kind: "ok",
+            text: "Account created. If email confirmation is enabled, check your inbox, confirm, then sign in.",
+          });
+          setAuthMode("login");
+          setAuthPassword("");
+          setAuthPassword2("");
+          return;
+        }
+      } else {
+        const result = await authPasswordLogin(email, authPassword);
+        if (!result.ok) {
+          setAuthToast({ kind: "err", text: result.message });
+          return;
+        }
+        session = result.session;
+      }
+
+      saveAdminSession(session);
+      setAuthSession(session);
+      const who = await authGetUser(session.access_token);
+      if (!who.ok || !who.user) {
+        setAuthToast({ kind: "err", text: "Signed in, but could not load user profile." });
+        return;
+      }
+      setAuthUser(who.user);
+
+      const adminCheck = await checkIsAdmin(who.user.id, session.access_token);
+      const admin = !!(adminCheck.ok && adminCheck.isAdmin);
+      setIsAdmin(admin);
+
+      // Optional phone capture (only if user provided one)
+      const phone = authPhone.trim();
+      if (phone) {
+        await upsertUserProfile(session.access_token, { user_id: who.user.id, phone });
+        setProfilePhone(phone);
+      } else {
+        const p = await fetchUserProfile(session.access_token, who.user.id);
+        if (p.ok && p.profile && p.profile.phone) setProfilePhone(p.profile.phone);
+      }
+
+      // Session history (best effort)
+      const tz =
+        (Intl && Intl.DateTimeFormat && Intl.DateTimeFormat().resolvedOptions
+          ? Intl.DateTimeFormat().resolvedOptions().timeZone
+          : "") || "";
+      await logSessionEvent(session.access_token, {
+        user_id: who.user.id,
+        event_type: "login",
+        is_admin: admin,
+        user_agent: navigator.userAgent || null,
+        tz: tz || null,
+      });
+      const ev = await fetchSessionEvents(session.access_token, 10);
+      if (ev.ok) setEvents(ev.events);
+
+      if (admin) {
+        setAuthToast({ kind: "ok", text: "Welcome admin! Redirecting to admin panel…" });
+        setTimeout(() => {
+          window.location.href = "./admin.html";
+        }, 450);
+        return;
+      }
+
+      setAuthToast({ kind: "ok", text: "Signed in. Welcome!" });
+      setAuthOpen(false);
+    } catch (err) {
+      const msg = err && err.message ? err.message : "Login failed.";
+      setAuthToast({ kind: "err", text: msg });
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  function onLogout() {
+    (async () => {
+      try {
+        const sess = loadAdminSession();
+        if (sess && sess.access_token && sess.user && sess.user.id) {
+          const tz =
+            (Intl && Intl.DateTimeFormat && Intl.DateTimeFormat().resolvedOptions
+              ? Intl.DateTimeFormat().resolvedOptions().timeZone
+              : "") || "";
+          await logSessionEvent(sess.access_token, {
+            user_id: sess.user.id,
+            event_type: "logout",
+            is_admin: isAdmin,
+            user_agent: navigator.userAgent || null,
+            tz: tz || null,
+          });
+        }
+      } catch {
+        // ignore
+      } finally {
+        clearAdminSession();
+        setAuthSession(null);
+        setAuthUser(null);
+        setIsAdmin(false);
+        setProfilePhone("");
+        setEvents([]);
+        setAuthToast({ kind: "idle", text: "" });
+        setStatus({ kind: "ok", text: "Logged out." });
+      }
+    })();
+    setAuthToast({ kind: "idle", text: "" });
+  }
+
+  async function onSavePhone() {
+    if (!authUser || !authSession || !authSession.access_token) return;
+    if (profileBusy) return;
+    setProfileBusy(true);
+    try {
+      const phone = (profilePhone || "").trim();
+      const res = await upsertUserProfile(authSession.access_token, { user_id: authUser.id, phone: phone || null });
+      if (!res.ok) {
+        setStatus({ kind: "err", text: res.message || "Could not save phone." });
+        return;
+      }
+      setStatus({ kind: "ok", text: phone ? "Phone saved." : "Phone cleared." });
+      const p = await fetchUserProfile(authSession.access_token, authUser.id);
+      if (p.ok && p.profile && p.profile.phone) setProfilePhone(p.profile.phone);
+      if (p.ok && (!p.profile || !p.profile.phone)) setProfilePhone("");
+    } catch (e) {
+      setStatus({ kind: "err", text: (e && e.message) || "Could not save phone." });
+    } finally {
+      setProfileBusy(false);
+    }
   }
 
   return (
@@ -285,12 +664,33 @@ function App() {
             <a className="chip" href="#tips" onClick={(e) => (e.preventDefault(), scrollToId("tips"))}>
               Tips
             </a>
+            {authUser ? (
+              <a className="chip" href="#account" onClick={(e) => (e.preventDefault(), scrollToId("account"))}>
+                Account
+              </a>
+            ) : null}
             <a className="chip" href="#contact" onClick={(e) => (e.preventDefault(), scrollToId("contact"))}>
               Contact
             </a>
             <button className="chip" type="button" onClick={() => setTheme((t) => (t === "night" ? "pastel" : "night"))}>
               {theme === "night" ? "Pastel" : "Night"}
             </button>
+            {authUser ? (
+              <>
+                {isAdmin ? (
+                  <a className="chip" href="./admin.html" title="Go to admin panel">
+                    Admin
+                  </a>
+                ) : null}
+                <button className="chip" type="button" onClick={onLogout} title={authUser.email || "Logout"}>
+                  Logout
+                </button>
+              </>
+            ) : (
+              <button className="chip" type="button" onClick={() => setAuthOpen(true)} disabled={!supabaseInfo.configured}>
+                Login
+              </button>
+            )}
             <button className="chip primary" onClick={() => scrollToId("contact")}>
               Book a Visit
             </button>
@@ -476,6 +876,96 @@ function App() {
             </div>
           </div>
         </section>
+
+        {authUser ? (
+          <section className="section" id="account">
+            <div className="container">
+              <div className="section-header">
+                <h2 className="h2">
+                  My Account
+                  <small>Optional phone + your recent session history.</small>
+                </h2>
+                <span className="pill">
+                  <span className="dot" aria-hidden="true"></span> Signed in
+                </span>
+              </div>
+
+              <div className="split">
+                <div className="panel form">
+                  <div className="mini-card">
+                    <p className="mini-title">
+                      Profile <span className="tag">{isAdmin ? "Admin" : "User"}</span>
+                    </p>
+                    <p className="mini-desc">
+                      Email: <b>{authUser.email || "unknown"}</b>
+                    </p>
+                  </div>
+
+                  <div className="mini-card" style={{ marginTop: 12 }}>
+                    <p className="mini-title">
+                      Phone <span className="tag sky">Optional</span>
+                    </p>
+                    <label className="full">
+                      Phone number
+                      <input
+                        value={profilePhone}
+                        onChange={(e) => setProfilePhone(e.target.value)}
+                        placeholder="e.g., +91 98xxxxxx"
+                        inputMode="tel"
+                        autoComplete="tel"
+                      />
+                    </label>
+                    <div className="cta-row" style={{ marginTop: 10 }}>
+                      <button className="btn primary" type="button" onClick={onSavePhone} disabled={profileBusy}>
+                        {profileBusy ? "Saving…" : "Save phone"}
+                      </button>
+                      <span className="notice">Stored in Supabase table: <code>public.user_profiles</code></span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="panel form">
+                  <div className="mini-card">
+                    <p className="mini-title">
+                      Session history <span className="tag">Latest</span>
+                    </p>
+                    {events && events.length ? (
+                      <div className="admin-table-wrap" style={{ marginTop: 10 }}>
+                        <table className="admin-table" style={{ minWidth: 560 }}>
+                          <thead>
+                            <tr>
+                              <th style={{ width: 140 }}>When</th>
+                              <th style={{ width: 90 }}>Event</th>
+                              <th style={{ width: 90 }}>Role</th>
+                              <th>Timezone</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {events.map((ev) => (
+                              <tr key={ev.id}>
+                                <td>{ev.created_at ? new Date(ev.created_at).toLocaleString() : "-"}</td>
+                                <td>{ev.event_type}</td>
+                                <td>{ev.is_admin ? "admin" : "user"}</td>
+                                <td>{ev.tz || "-"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="notice" style={{ marginTop: 10 }}>
+                        No events yet. Sign out/in once to populate history.
+                      </p>
+                    )}
+                    <p className="notice">
+                      Stored in Supabase table: <code>public.user_session_events</code>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
 
         <section className="section" id="contact">
           <div className="container">
@@ -671,6 +1161,98 @@ function App() {
           </div>
         </footer>
       </main>
+
+      {authOpen ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Admin login">
+          <div className="modal panel">
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+              <div>
+                <div className="kicker" style={{ marginBottom: 10 }}>
+                  <PawIcon style={{ width: 16, height: 16, fill: "currentColor" }} />
+                  Account
+                </div>
+                <h2 className="h2" style={{ margin: 0 }}>
+                  {authMode === "signup" ? "Create account" : "Sign in"}
+                  <small>Admins get redirected to `admin.html` automatically.</small>
+                </h2>
+              </div>
+              <button className="chip" type="button" onClick={() => setAuthOpen(false)}>
+                Close
+              </button>
+            </div>
+
+            {!!authToast.text ? (
+              <div className={`toast ${authToast.kind === "ok" ? "ok" : "err"}`} style={{ marginTop: 12 }}>
+                {authToast.text}
+              </div>
+            ) : null}
+
+            <form onSubmit={onAuthSubmit} style={{ marginTop: 10 }}>
+              <div className="form-grid">
+                <label>
+                  Email
+                  <input value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} autoComplete="email" />
+                </label>
+                <label>
+                  Password
+                  <input
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    type="password"
+                    autoComplete="current-password"
+                  />
+                </label>
+                {authMode === "signup" ? (
+                  <label className="full">
+                    Confirm password
+                    <input
+                      value={authPassword2}
+                      onChange={(e) => setAuthPassword2(e.target.value)}
+                      type="password"
+                      autoComplete="new-password"
+                    />
+                  </label>
+                ) : null}
+                {authMode === "signup" ? (
+                  <label className="full">
+                    Phone (optional)
+                    <input
+                      value={authPhone}
+                      onChange={(e) => setAuthPhone(e.target.value)}
+                      placeholder="e.g., +91 98xxxxxx"
+                      autoComplete="tel"
+                      inputMode="tel"
+                    />
+                  </label>
+                ) : null}
+              </div>
+              <div className="cta-row" style={{ marginTop: 12 }}>
+                <button className="btn primary" type="submit" disabled={authBusy}>
+                  {authBusy ? "Please wait…" : authMode === "signup" ? "Create account" : "Sign in"}
+                </button>
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => {
+                    setAuthMode((m) => (m === "login" ? "signup" : "login"));
+                    setAuthPassword("");
+                    setAuthPassword2("");
+                    setAuthPhone("");
+                    setAuthToast({ kind: "idle", text: "" });
+                  }}
+                >
+                  {authMode === "login" ? "Create account" : "I already have an account"}
+                </button>
+                <span className="notice">
+                  {supabaseInfo.configured
+                    ? "Make sure Email/Password sign-in is enabled in Supabase Auth."
+                    : "Set Supabase keys in config.local.js first."}
+                </span>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
 
       <div className="fab-stack" aria-label="Quick actions">
         <a

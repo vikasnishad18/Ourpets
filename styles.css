@@ -108,6 +108,22 @@ body.theme-night .fab svg {
   max-width: 340px;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 18, 32, 0.35);
+  backdrop-filter: blur(10px);
+  z-index: 70;
+}
+
+.modal {
+  width: min(740px, 100%);
+  padding: 18px;
+}
+
 .bg {
   position: fixed;
   inset: 0;

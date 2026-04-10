@@ -27,6 +27,7 @@ On Windows PowerShell you can also run:
 1. Create a Supabase project.
 2. In Supabase **SQL Editor**, run `supabase.sql`.
 3. In Supabase **SQL Editor**, run `supabase_admin.sql` (services + admin role).
+4. In Supabase **SQL Editor**, run `supabase_user.sql` (optional phone + session history).
 3. In Supabase **Project Settings → API**, copy:
    - Project URL
    - `anon` public key
@@ -56,6 +57,15 @@ Admin URL:
 
 - `http://localhost:5173/admin.html`
 
+You can also sign in from the homepage using the **Login** button; admins will be redirected to `admin.html`.
+
+## 4) User accounts (sign up / login)
+
+On the homepage, click **Login**:
+
+- Normal users can create an account and sign in (for demo purposes).
+- If the user is allowlisted in `public.admin_users`, they automatically get admin access and are redirected to `admin.html`.
+
 Steps:
 
 1. Supabase → **Authentication → Users** → create a user (email + password).
@@ -80,6 +90,7 @@ Now login on `admin.html` and edit services. The homepage reads services from `p
 - `app.jsx` – React UI + Supabase REST submit + theme/tips
 - `supabase.sql` – table + RLS policy for inserts
 - `supabase_admin.sql` – services table + admin role policies
+- `supabase_user.sql` – user profile (phone) + session history
 - `admin.html` – admin URL
 - `admin.jsx` – admin UI (login + CRUD)
 

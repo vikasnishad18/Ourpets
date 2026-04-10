@@ -23,5 +23,5 @@ drop policy if exists "anon can insert inquiries" on public.inquiries;
 create policy "anon can insert inquiries"
 on public.inquiries
 for insert
-to anon
+to anon, authenticated
 with check (true);
