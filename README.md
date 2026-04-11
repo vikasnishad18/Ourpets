@@ -31,7 +31,7 @@ On Windows PowerShell you can also run:
 3. In Supabase **Project Settings → API**, copy:
    - Project URL
    - `anon` public key
-4. Edit `index.html` and set:
+4. For hosted deployments, edit `config.public.js` (recommended) or `index.html` and set:
 
 ```js
 window.OURPETS_SUPABASE_URL = "https://YOUR_PROJECT_ID.supabase.co";
@@ -42,7 +42,7 @@ Now the “Send Inquiry” form will insert rows into `public.inquiries`.
 
 ### Local keys (recommended)
 
-Instead of committing keys into HTML, create `config.local.js` (it’s gitignored):
+Instead of committing keys into HTML, create `config.local.js` (it’s gitignored). It overrides `config.public.js`:
 
 ```js
 window.OURPETS_SUPABASE_URL = "https://YOUR_PROJECT_ID.supabase.co";

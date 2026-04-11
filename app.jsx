@@ -726,7 +726,19 @@ function App() {
                 </button>
               </>
             ) : (
-              <button className="chip" type="button" onClick={() => setAuthOpen(true)} disabled={!supabaseInfo.configured}>
+              <button
+                className="chip"
+                type="button"
+                onClick={() => {
+                  if (!supabaseInfo.configured) {
+                    setAuthToast({
+                      kind: "err",
+                      text: "Supabase is not configured for this deployment. Set keys in config.public.js (or config.local.js for local).",
+                    });
+                  }
+                  setAuthOpen(true);
+                }}
+              >
                 Login
               </button>
             )}

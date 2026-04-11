@@ -22,12 +22,16 @@
       </div>
     </div>
 
-    <!-- Supabase REST config (edit for hosted demo; for local use config.local.js) -->
+    <!-- Supabase REST config -->
+    <!-- 1) Hosted deployments: edit config.public.js (committed) -->
+    <script src="./config.public.js" onerror="console.warn('[Ourpets] Missing config.public.js (set Supabase keys for deployment).')"></script>
+    <!-- 2) Fallback defaults (keep empty unless set by config.public.js) -->
     <script>
-      window.OURPETS_SUPABASE_URL = "";
-      window.OURPETS_SUPABASE_ANON_KEY = "";
+      window.OURPETS_SUPABASE_URL = window.OURPETS_SUPABASE_URL || "";
+      window.OURPETS_SUPABASE_ANON_KEY = window.OURPETS_SUPABASE_ANON_KEY || "";
     </script>
-    <script src="./config.local.js"></script>
+    <!-- 3) Local-only overrides (gitignored): config.local.js -->
+    <script src="./config.local.js" onerror="console.info('[Ourpets] config.local.js not found (normal on deployed sites).')"></script>
 
     <!-- React (no build step) -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
