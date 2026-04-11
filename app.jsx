@@ -212,6 +212,25 @@ async function fetchPublicServices() {
   return { ok: true, services: Array.isArray(data) ? data : null };
 }
 
+async function fetchPublicSitePhotos() {
+  const { url, anonKey } = buildSupabaseRestConfig();
+  if (!url || !anonKey) return { ok: false, rows: null };
+
+  const normalizedUrl = url.replace(/\/$/, "");
+  const endpoint = `${normalizedUrl}/rest/v1/site_photos?select=id,section,title,url,sort_order&is_active=eq.true&order=section.asc,sort_order.asc`;
+  const res = await fetch(endpoint, {
+    method: "GET",
+    headers: {
+      apikey: anonKey,
+      Authorization: `Bearer ${anonKey}`,
+    },
+  });
+
+  if (!res.ok) return { ok: false, rows: null };
+  const data = await res.json();
+  return { ok: true, rows: Array.isArray(data) ? data : null };
+}
+
 async function submitInquiry(payload) {
   const { url, anonKey } = buildSupabaseRestConfig();
   if (!url || !anonKey) {
@@ -275,6 +294,7 @@ function App() {
 
   const [services, setServices] = useState(fallbackServices);
   const [servicesFromDb, setServicesFromDb] = useState(false);
+  const [sitePhotos, setSitePhotos] = useState(() => ({}));
 
   const products = useMemo(
     () => [
@@ -389,6 +409,25 @@ function App() {
         if (cancelled) return;
         setServices(fallbackServices);
         setServicesFromDb(false);
+      }
+
+      try {
+        const ph = await fetchPublicSitePhotos();
+        if (cancelled) return;
+        if (ph.ok && ph.rows) {
+          const grouped = {};
+          for (const row of ph.rows) {
+            const key = row && row.section ? String(row.section) : "other";
+            if (!grouped[key]) grouped[key] = [];
+            grouped[key].push(row);
+          }
+          setSitePhotos(grouped);
+        } else {
+          setSitePhotos({});
+        }
+      } catch {
+        if (cancelled) return;
+        setSitePhotos({});
       }
     })();
     return () => {
@@ -715,7 +754,11 @@ function App() {
                 A cute, user-friendly demo site for <b>Ourpets</b> — featuring services, products, and a contact form
                 that can save inquiries to <b>Supabase</b>.
               </p>
-              <img src="images/Pet care store interior display.png" alt="Happy pet illustration" style={{width: '100%', borderRadius: '8px', marginTop: '20px'}} />
+              <img
+                src={(sitePhotos.hero && sitePhotos.hero[0] && sitePhotos.hero[0].url) || "images/Pet care store interior display.png"}
+                alt={(sitePhotos.hero && sitePhotos.hero[0] && sitePhotos.hero[0].title) || "Happy pet illustration"}
+                style={{ width: "100%", borderRadius: "8px", marginTop: "20px" }}
+              />
               <div className="cta-row">
                 <button className="btn primary" onClick={() => scrollToId("contact")}>
                   Send an Inquiry
@@ -819,14 +862,18 @@ function App() {
               </div>
 
               {filteredProducts.map((p, index) => {
-                const imageNames = ["p4.png", "p5.png", "p6.png"];
+                const fallback = ["images/p4.png", "images/p5.png", "images/p6.png"];
+                const urls =
+                  sitePhotos.products && Array.isArray(sitePhotos.products) && sitePhotos.products.length
+                    ? sitePhotos.products.map((x) => x.url).filter(Boolean)
+                    : fallback;
                 return (
                   <div className="card" role="listitem" key={p.name}>
                     <Icon>
                       <PawIcon />
                     </Icon>
                     <img
-                      src={`images/${imageNames[index % imageNames.length]}`}
+                      src={urls[index % urls.length]}
                       alt={`${p.name} product image`}
                       style={{ width: "100%", borderRadius: "8px", marginBottom: "10px" }}
                     />

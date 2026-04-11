@@ -14,7 +14,17 @@
   </head>
   <body>
     <div class="bg" aria-hidden="true"></div>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot" style="min-height: 100vh; display: grid; place-items: center; padding: 28px;">
+        <div class="card" style="grid-column: auto; max-width: 680px; width: 100%;">
+          <h3 style="margin: 0 0 8px;">Ourpets</h3>
+          <p style="margin: 0;">Loading…</p>
+          <p class="notice" style="margin: 10px 0 0;">
+            If this stays stuck, check your connection (CDN scripts) and make sure you opened the site via a local server (not <code>file://</code>).
+          </p>
+        </div>
+      </div>
+    </div>
 
     <!-- Supabase REST config (edit these for your client demo) -->
     <script>
@@ -31,6 +41,54 @@
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+
+    <script>
+      (function () {
+        const root = document.getElementById("root");
+        const boot = document.getElementById("boot");
+        if (!root || !boot) return;
+
+        function showHelp(title, message) {
+          root.innerHTML =
+            '<div style="min-height: 100vh; display: grid; place-items: center; padding: 28px;">' +
+            '<div class="card" style="grid-column:auto; max-width: 760px; width: 100%;">' +
+            "<h3 style=\"margin:0 0 8px;\">" +
+            title +
+            "</h3>" +
+            '<p class="notice" style="margin:0;">' +
+            message +
+            "</p>" +
+            "</div></div>";
+        }
+
+        window.addEventListener("error", (e) => {
+          const msg = e && e.message ? e.message : "Unknown error";
+          showHelp("Page error", `JavaScript error: <code>${String(msg)}</code>. Open DevTools Console for details.`);
+        });
+
+        window.addEventListener("unhandledrejection", (e) => {
+          const msg = e && e.reason && e.reason.message ? e.reason.message : e && e.reason ? String(e.reason) : "Unknown error";
+          showHelp("Page error", `Unhandled promise rejection: <code>${String(msg)}</code>. Open DevTools Console for details.`);
+        });
+
+        // If React/Babel/CDN didn't load, the app never mounts and the page looks blank.
+        setTimeout(() => {
+          if (!document.getElementById("boot")) return; // app mounted
+          if (!window.React || !window.ReactDOM || !window.Babel) {
+            showHelp(
+              "CDN scripts not loaded",
+              "React/Babel failed to load from <code>unpkg.com</code>. Check your internet / firewall / adblock, then refresh."
+            );
+            return;
+          }
+          // Common issue: opening from file:// prevents Babel from fetching ./app.jsx.
+          showHelp(
+            "App did not start",
+            "If you opened this via <code>file://</code>, start a local server instead: <code>python -m http.server 5173</code> (or run <code>./start.ps1</code>), then open <code>http://localhost:5173/</code>."
+          );
+        }, 2200);
+      })();
+    </script>
 
     <script type="text/babel" data-presets="react" src="./app.jsx"></script>
   </body>

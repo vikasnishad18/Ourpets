@@ -24,6 +24,7 @@ function getHost(url) {
 }
 
 const STORAGE_KEY = "ourpets_admin_session_v1";
+const STORAGE_BUCKET_ID = "ourpets";
 
 function loadSession() {
   try {
@@ -131,6 +132,14 @@ function toIsoDayEnd(dateStr) {
   // dateStr: YYYY-MM-DD
   if (!dateStr) return "";
   return `${dateStr}T23:59:59.999Z`;
+}
+
+function formatShortDateTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function buildQuery(params) {
@@ -297,6 +306,116 @@ function downloadCsv(filename, rows, columns) {
   a.remove();
 }
 
+function encodeUrlPath(path) {
+  return String(path)
+    .split("/")
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
+}
+
+function buildPublicStorageUrl(projectUrl, bucketId, objectPath) {
+  const normalizedUrl = String(projectUrl || "").replace(/\/$/, "");
+  const enc = encodeUrlPath(objectPath);
+  return `${normalizedUrl}/storage/v1/object/public/${encodeURIComponent(bucketId)}/${enc}`;
+}
+
+async function uploadStorageObject(accessToken, file, objectPath) {
+  const { url, anonKey } = buildSupabaseRestConfig();
+  if (!url || !anonKey) return { ok: false, publicUrl: "", message: "Supabase is not configured." };
+  if (!file) return { ok: false, publicUrl: "", message: "Choose a file to upload." };
+
+  const normalizedUrl = url.replace(/\/$/, "");
+  const safeObjectPath = encodeUrlPath(objectPath);
+  const endpoint = `${normalizedUrl}/storage/v1/object/${encodeURIComponent(STORAGE_BUCKET_ID)}/${safeObjectPath}`;
+
+  const headersBase = {
+    apikey: anonKey,
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": file.type || "application/octet-stream",
+    "x-upsert": "true",
+  };
+
+  // Supabase Storage accepts upload via POST (and some deployments accept PUT). Try POST then PUT.
+  let res = await fetch(endpoint, { method: "POST", headers: headersBase, body: file });
+  if (!res.ok && res.status === 405) {
+    res = await fetch(endpoint, { method: "PUT", headers: headersBase, body: file });
+  }
+  if (!res.ok) return { ok: false, publicUrl: "", message: await res.text() };
+
+  const publicUrl = buildPublicStorageUrl(url, STORAGE_BUCKET_ID, objectPath);
+  return { ok: true, publicUrl };
+}
+
+async function fetchSitePhotos(accessToken, input) {
+  const pageSize = input.pageSize || 20;
+  const offset = (input.page || 0) * pageSize;
+  const order = `${input.sort || "section"}.asc,sort_order.${input.dir || "asc"},created_at.desc`;
+
+  const params = {
+    select: "id,created_at,updated_at,section,title,url,is_active,sort_order",
+    order,
+    limit: pageSize,
+    offset,
+  };
+
+  const q = (input.q || "").trim();
+  if (q) params.or = `(title.ilike.*${q}*,url.ilike.*${q}*,section.ilike.*${q}*)`;
+  if (input.section) params.section = `eq.${input.section}`;
+  if (input.active === "yes") params.is_active = "eq.true";
+  if (input.active === "no") params.is_active = "eq.false";
+
+  const res = await supabaseRest(`/rest/v1/site_photos${buildQuery(params)}`, accessToken, {
+    method: "GET",
+    headers: { Prefer: "count=exact" },
+  });
+  const range = parseContentRange(res.headers.get("content-range"));
+  const t = await res.text();
+  if (!res.ok) return { ok: false, rows: [], total: range.total, message: t || "Could not load photos." };
+  let rows = [];
+  try {
+    rows = t ? JSON.parse(t) : [];
+  } catch {
+    rows = [];
+  }
+  return { ok: true, rows: Array.isArray(rows) ? rows : [], total: range.total };
+}
+
+async function createSitePhoto(row, accessToken) {
+  const res = await supabaseRest("/rest/v1/site_photos", accessToken, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Prefer: "return=representation" },
+    body: JSON.stringify(row),
+  });
+  const t = await res.text();
+  if (!res.ok) return { ok: false, message: t || "Create failed." };
+  let data = null;
+  try {
+    data = t ? JSON.parse(t) : null;
+  } catch {
+    data = null;
+  }
+  return { ok: true, created: Array.isArray(data) && data[0] ? data[0] : null };
+}
+
+async function updateSitePhoto(id, patch, accessToken) {
+  const res = await supabaseRest(`/rest/v1/site_photos?id=eq.${encodeURIComponent(id)}`, accessToken, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) return { ok: false, message: (await res.text()) || "Update failed." };
+  return { ok: true };
+}
+
+async function deleteSitePhoto(id, accessToken) {
+  const res = await supabaseRest(`/rest/v1/site_photos?id=eq.${encodeURIComponent(id)}`, accessToken, {
+    method: "DELETE",
+    headers: { Prefer: "return=minimal" },
+  });
+  if (!res.ok) return { ok: false, message: (await res.text()) || "Delete failed." };
+  return { ok: true };
+}
+
 async function fetchAllServices(accessToken) {
   const { url, anonKey } = buildSupabaseRestConfig();
   const normalizedUrl = url.replace(/\/$/, "");
@@ -399,7 +518,7 @@ function AdminApp() {
   const [session, setSession] = useState(() => loadSession());
   const [user, setUser] = useState(null);
   const [services, setServices] = useState([]);
-  const [activeTab, setActiveTab] = useState("services"); // services | inquiries | users | sessions
+  const [activeTab, setActiveTab] = useState("services"); // services | inquiries | users | sessions | photos
 
   const [inq, setInq] = useState({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
   const [inqFilters, setInqFilters] = useState({ q: "", service: "", pet_type: "", from: "", to: "", dir: "desc" });
@@ -410,12 +529,33 @@ function AdminApp() {
   const [sessions, setSessions] = useState({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
   const [sessionFilters, setSessionFilters] = useState({ user_id: "", event_type: "", role: "", from: "", to: "", dir: "desc" });
 
+  const [photos, setPhotos] = useState({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
+  const [photoFilters, setPhotoFilters] = useState({ q: "", section: "", active: "yes", dir: "asc" });
+  const [photoDraft, setPhotoDraft] = useState({
+    section: "hero",
+    title: "",
+    url: "",
+    is_active: true,
+    sort_order: 100,
+  });
+  const [photoFile, setPhotoFile] = useState(null);
+
   const [toast, setToast] = useState({ kind: "idle", text: "" });
   const [busy, setBusy] = useState(false);
 
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const lastActionAt = useRef(0);
+  const tabMeta = useMemo(
+    () => ({
+      services: { title: "Services", subtitle: "Edit what shows on the public homepage." },
+      inquiries: { title: "Inquiries", subtitle: "View contact/booking requests sent from the homepage." },
+      users: { title: "Users", subtitle: "User profiles captured from signups (optional phone)." },
+      sessions: { title: "Sessions", subtitle: "Login/logout audit events (optional)." },
+      photos: { title: "Photos", subtitle: "Edit section photos and upload new images from your computer." },
+    }),
+    []
+  );
 
   async function bootstrap(existingSession) {
     if (!configured) {
@@ -528,6 +668,32 @@ function AdminApp() {
     }
   }
 
+  async function loadPhotos(next) {
+    if (!session) return;
+    setPhotos((s) => ({ ...s, loading: true }));
+    try {
+      const res = await fetchSitePhotos(session.access_token, Object.assign({}, photoFilters, next));
+      if (!res.ok) {
+        const raw = res.message || "Could not load photos.";
+        const friendly = /site_photos/i.test(raw) && /does not exist|undefined|not found/i.test(raw)
+          ? 'Missing table. Re-run `supabase_admin.sql` to create `public.site_photos` and the Storage bucket policies.'
+          : raw;
+        setToast({ kind: "err", text: friendly });
+        setPhotos((s) => ({ ...s, rows: [], total: res.total || null, loading: false }));
+        return;
+      }
+      setPhotos((s) => ({
+        ...s,
+        rows: res.rows,
+        total: res.total,
+        page: next && typeof next.page === "number" ? next.page : s.page,
+        loading: false,
+      }));
+    } finally {
+      setPhotos((s) => ({ ...s, loading: false }));
+    }
+  }
+
   useEffect(() => {
     bootstrap(session);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -571,6 +737,7 @@ function AdminApp() {
     setInq({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
     setUsers({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
     setSessions({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
+    setPhotos({ rows: [], total: null, loading: false, page: 0, pageSize: 20 });
     setMode("login");
     setToast({ kind: "ok", text: "Logged out." });
   }
@@ -596,6 +763,7 @@ function AdminApp() {
     if (activeTab === "inquiries") await loadInquiries({ page: inq.page, pageSize: inq.pageSize });
     if (activeTab === "users") await loadUsers({ page: users.page, pageSize: users.pageSize });
     if (activeTab === "sessions") await loadSessions({ page: sessions.page, pageSize: sessions.pageSize });
+    if (activeTab === "photos") await loadPhotos({ page: photos.page, pageSize: photos.pageSize });
   }
 
   function onExportCsv() {
@@ -620,6 +788,20 @@ function AdminApp() {
       "tz",
       "user_agent",
     ]);
+    if (activeTab === "photos") downloadCsv(`ourpets-photos-${stamp}.csv`, photos.rows, [
+      "section",
+      "title",
+      "url",
+      "is_active",
+      "sort_order",
+      "created_at",
+      "updated_at",
+    ]);
+  }
+
+  function canNext(page, pageSize, total, rows) {
+    if (typeof total === "number") return (page + 1) * pageSize < total;
+    return Array.isArray(rows) && rows.length === pageSize;
   }
 
   useEffect(() => {
@@ -628,6 +810,7 @@ function AdminApp() {
     if (activeTab === "inquiries" && !inq.rows.length) loadInquiries({ page: 0, pageSize: inq.pageSize });
     if (activeTab === "users" && !users.rows.length) loadUsers({ page: 0, pageSize: users.pageSize });
     if (activeTab === "sessions" && !sessions.rows.length) loadSessions({ page: 0, pageSize: sessions.pageSize });
+    if (activeTab === "photos" && !photos.rows.length) loadPhotos({ page: 0, pageSize: photos.pageSize });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, mode]);
 
@@ -638,6 +821,140 @@ function AdminApp() {
         return { ...r, [key]: value };
       })
     );
+  }
+
+  function updateLocalPhoto(id, key, value) {
+    setPhotos((s) => ({
+      ...s,
+      rows: (s.rows || []).map((r) => {
+        if (String(r.id) !== String(id)) return r;
+        return { ...r, [key]: value };
+      }),
+    }));
+  }
+
+  async function onAddPhoto() {
+    if (!session || busy || rateLimit()) return;
+    const row = {
+      section: String(photoDraft.section || "other"),
+      title: String(photoDraft.title || "").trim() || null,
+      url: String(photoDraft.url || "").trim(),
+      is_active: !!photoDraft.is_active,
+      sort_order: Number(photoDraft.sort_order || 100),
+    };
+
+    if (!row.url) {
+      setToast({ kind: "err", text: "Provide a URL, or choose a file to upload." });
+      return;
+    }
+
+    setBusy(true);
+    setToast({ kind: "idle", text: "" });
+    try {
+      const res = await createSitePhoto(row, session.access_token);
+      if (!res.ok) {
+        setToast({ kind: "err", text: res.message || "Could not add photo." });
+        return;
+      }
+      setToast({ kind: "ok", text: "Photo added." });
+      setPhotoDraft((d) => ({ ...d, title: "", url: "" }));
+      setPhotoFile(null);
+      await loadPhotos({ page: 0, pageSize: photos.pageSize });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onUploadAndAddPhoto() {
+    if (!session || busy || rateLimit()) return;
+    if (!photoFile) {
+      setToast({ kind: "err", text: "Choose a file to upload." });
+      return;
+    }
+
+    const section = String(photoDraft.section || "other");
+    const fileName = String(photoFile.name || "upload").replace(/[^\w.\-]+/g, "_");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const objectPath = `site_photos/${section}/${stamp}_${fileName}`;
+
+    setBusy(true);
+    setToast({ kind: "idle", text: "" });
+    try {
+      const up = await uploadStorageObject(session.access_token, photoFile, objectPath);
+      if (!up.ok) {
+        setToast({ kind: "err", text: up.message || "Upload failed." });
+        return;
+      }
+      const row = {
+        section,
+        title: String(photoDraft.title || "").trim() || fileName,
+        url: up.publicUrl,
+        is_active: !!photoDraft.is_active,
+        sort_order: Number(photoDraft.sort_order || 100),
+      };
+      const res = await createSitePhoto(row, session.access_token);
+      if (!res.ok) {
+        setToast({ kind: "err", text: res.message || "Could not save photo row." });
+        return;
+      }
+      setToast({ kind: "ok", text: "Uploaded + added." });
+      setPhotoDraft((d) => ({ ...d, title: "", url: "" }));
+      setPhotoFile(null);
+      await loadPhotos({ page: 0, pageSize: photos.pageSize });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onSavePhoto(id) {
+    if (!session || busy || rateLimit()) return;
+    const row = (photos.rows || []).find((r) => String(r.id) === String(id));
+    if (!row) return;
+    if (!row.section || !row.url) {
+      setToast({ kind: "err", text: "Section and URL are required." });
+      return;
+    }
+
+    setBusy(true);
+    setToast({ kind: "idle", text: "" });
+    try {
+      const patch = {
+        section: String(row.section),
+        title: row.title == null ? null : String(row.title),
+        url: String(row.url),
+        is_active: !!row.is_active,
+        sort_order: Number(row.sort_order || 100),
+      };
+      const res = await updateSitePhoto(row.id, patch, session.access_token);
+      if (!res.ok) {
+        setToast({ kind: "err", text: res.message || "Update failed." });
+        return;
+      }
+      setToast({ kind: "ok", text: "Saved." });
+      await loadPhotos({ page: photos.page, pageSize: photos.pageSize });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDeletePhoto(id) {
+    if (!session || busy || rateLimit()) return;
+    const ok = window.confirm("Delete this photo row?");
+    if (!ok) return;
+
+    setBusy(true);
+    setToast({ kind: "idle", text: "" });
+    try {
+      const res = await deleteSitePhoto(id, session.access_token);
+      if (!res.ok) {
+        setToast({ kind: "err", text: res.message || "Delete failed." });
+        return;
+      }
+      setToast({ kind: "ok", text: "Deleted." });
+      await loadPhotos({ page: Math.max(0, photos.page - 1), pageSize: photos.pageSize });
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function onSaveService(id) {
@@ -735,9 +1052,15 @@ function AdminApp() {
                 <button className="chip" onClick={onReload} disabled={busy}>
                   Reload
                 </button>
-                <button className="chip primary" onClick={onAddService} disabled={busy}>
-                  Add Service
-                </button>
+                {activeTab === "services" ? (
+                  <button className="chip primary" onClick={onAddService} disabled={busy}>
+                    Add Service
+                  </button>
+                ) : (
+                  <button className="chip" onClick={onExportCsv} disabled={busy}>
+                    Export CSV
+                  </button>
+                )}
                 <button className="chip" onClick={onLogout} disabled={busy}>
                   Logout
                 </button>
@@ -755,8 +1078,8 @@ function AdminApp() {
         <div className="container">
           <div className="panel form">
             <h2 className="h2" style={{ marginBottom: 8 }}>
-              Services Admin
-              <small>Edit what shows on the public homepage.</small>
+              {(tabMeta[activeTab] && tabMeta[activeTab].title) || "Admin"}
+              <small>{(tabMeta[activeTab] && tabMeta[activeTab].subtitle) || ""}</small>
             </h2>
 
             {!!toast.text && <div className={`toast ${toast.kind === "ok" ? "ok" : "err"}`}>{toast.text}</div>}
@@ -805,72 +1128,557 @@ function AdminApp() {
             )}
 
             {mode === "app" && (
-              <div className="admin-table-wrap" style={{ marginTop: 10 }}>
-                <table className="admin-table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: "22%" }}>Title</th>
-                      <th>Description</th>
-                      <th style={{ width: 120 }}>Icon</th>
-                      <th style={{ width: 92 }}>Active</th>
-                      <th style={{ width: 92 }}>Order</th>
-                      <th style={{ width: 190 }}>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {services.map((s) => (
-                      <tr key={s.id}>
-                        <td>
-                          <input
-                            value={s.title || ""}
-                            onChange={(e) => updateLocalService(s.id, "title", e.target.value)}
-                          />
-                        </td>
-                        <td>
-                          <textarea
-                            value={s.description || ""}
-                            onChange={(e) => updateLocalService(s.id, "description", e.target.value)}
-                          />
-                        </td>
-                        <td>
-                          <select value={s.icon || "paw"} onChange={(e) => updateLocalService(s.id, "icon", e.target.value)}>
-                            <option value="paw">paw</option>
-                            <option value="grooming">grooming</option>
-                            <option value="medical">medical</option>
-                            <option value="training">training</option>
+              <div style={{ marginTop: 10 }}>
+                <div className="admin-tabs" role="tablist" aria-label="Admin sections">
+                  <button className={`tab ${activeTab === "services" ? "active" : ""}`} type="button" onClick={() => setActiveTab("services")}>
+                    Services
+                  </button>
+                  <button className={`tab ${activeTab === "inquiries" ? "active" : ""}`} type="button" onClick={() => setActiveTab("inquiries")}>
+                    Inquiries
+                  </button>
+                  <button className={`tab ${activeTab === "users" ? "active" : ""}`} type="button" onClick={() => setActiveTab("users")}>
+                    Users
+                  </button>
+                  <button className={`tab ${activeTab === "sessions" ? "active" : ""}`} type="button" onClick={() => setActiveTab("sessions")}>
+                    Sessions
+                  </button>
+                  <button className={`tab ${activeTab === "photos" ? "active" : ""}`} type="button" onClick={() => setActiveTab("photos")}>
+                    Photos
+                  </button>
+                </div>
+
+                {activeTab === "services" && (
+                  <div className="admin-table-wrap">
+                    <table className="admin-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: "22%" }}>Title</th>
+                          <th>Description</th>
+                          <th style={{ width: 120 }}>Icon</th>
+                          <th style={{ width: 92 }}>Active</th>
+                          <th style={{ width: 92 }}>Order</th>
+                          <th style={{ width: 190 }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {services.map((s) => (
+                          <tr key={s.id}>
+                            <td>
+                              <input value={s.title || ""} onChange={(e) => updateLocalService(s.id, "title", e.target.value)} />
+                            </td>
+                            <td>
+                              <textarea value={s.description || ""} onChange={(e) => updateLocalService(s.id, "description", e.target.value)} />
+                            </td>
+                            <td>
+                              <select value={s.icon || "paw"} onChange={(e) => updateLocalService(s.id, "icon", e.target.value)}>
+                                <option value="paw">paw</option>
+                                <option value="grooming">grooming</option>
+                                <option value="medical">medical</option>
+                                <option value="training">training</option>
+                              </select>
+                            </td>
+                            <td style={{ textAlign: "center" }}>
+                              <input type="checkbox" checked={!!s.is_active} onChange={(e) => updateLocalService(s.id, "is_active", e.target.checked)} />
+                            </td>
+                            <td>
+                              <input
+                                inputMode="numeric"
+                                value={String(s.sort_order == null ? "" : s.sort_order)}
+                                onChange={(e) => updateLocalService(s.id, "sort_order", e.target.value)}
+                              />
+                            </td>
+                            <td>
+                              <div className="admin-actions">
+                                <button className="btn primary" type="button" onClick={() => onSaveService(s.id)} disabled={busy}>
+                                  Save
+                                </button>
+                                <button className="btn danger" type="button" onClick={() => onDeleteService(s.id)} disabled={busy}>
+                                  Delete
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <p className="notice">
+                      Tip: Open <a href="./index.html">the homepage</a> in another tab and refresh after edits.
+                    </p>
+                  </div>
+                )}
+
+                {activeTab === "inquiries" && (
+                  <div className="admin-table-wrap">
+                    <div className="admin-toolbar">
+                      <div className="admin-filters">
+                        <label>
+                          Search
+                          <input value={inqFilters.q} onChange={(e) => setInqFilters((s) => ({ ...s, q: e.target.value }))} placeholder="Name, phone, email, service…" />
+                        </label>
+                        <label>
+                          Service
+                          <input value={inqFilters.service} onChange={(e) => setInqFilters((s) => ({ ...s, service: e.target.value }))} placeholder="e.g. Grooming" />
+                        </label>
+                        <label>
+                          Pet type
+                          <input value={inqFilters.pet_type} onChange={(e) => setInqFilters((s) => ({ ...s, pet_type: e.target.value }))} placeholder="Dog / Cat" />
+                        </label>
+                        <label>
+                          From
+                          <input value={inqFilters.from} onChange={(e) => setInqFilters((s) => ({ ...s, from: e.target.value }))} type="date" />
+                        </label>
+                        <label>
+                          To
+                          <input value={inqFilters.to} onChange={(e) => setInqFilters((s) => ({ ...s, to: e.target.value }))} type="date" />
+                        </label>
+                        <label>
+                          Order
+                          <select value={inqFilters.dir} onChange={(e) => setInqFilters((s) => ({ ...s, dir: e.target.value }))}>
+                            <option value="desc">Newest</option>
+                            <option value="asc">Oldest</option>
                           </select>
-                        </td>
-                        <td style={{ textAlign: "center" }}>
-                          <input
-                            type="checkbox"
-                            checked={!!s.is_active}
-                            onChange={(e) => updateLocalService(s.id, "is_active", e.target.checked)}
-                          />
-                        </td>
-                        <td>
-                          <input
-                            inputMode="numeric"
-                            value={String(s.sort_order == null ? "" : s.sort_order)}
-                            onChange={(e) => updateLocalService(s.id, "sort_order", e.target.value)}
-                          />
-                        </td>
-                        <td>
-                          <div className="admin-actions">
-                            <button className="btn primary" type="button" onClick={() => onSaveService(s.id)} disabled={busy}>
-                              Save
-                            </button>
-                            <button className="btn danger" type="button" onClick={() => onDeleteService(s.id)} disabled={busy}>
-                              Delete
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <p className="notice">
-                  Tip: Open <a href="./index.html">the homepage</a> in another tab and refresh after edits.
-                </p>
+                        </label>
+                        <div className="admin-actions" style={{ alignSelf: "end" }}>
+                          <button className="btn primary" type="button" onClick={() => loadInquiries({ page: 0, pageSize: inq.pageSize })} disabled={inq.loading || busy}>
+                            Apply
+                          </button>
+                        </div>
+                      </div>
+                      <div className="notice">{inq.total != null ? `${inq.total} total` : `${inq.rows.length} loaded`}</div>
+                    </div>
+
+                    <table className="admin-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 170 }}>Created</th>
+                          <th style={{ width: 200 }}>Name</th>
+                          <th style={{ width: 140 }}>Phone</th>
+                          <th style={{ width: 220 }}>Email</th>
+                          <th style={{ width: 120 }}>Pet</th>
+                          <th style={{ width: 180 }}>Service</th>
+                          <th style={{ width: 140 }}>Preferred</th>
+                          <th>Message</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(inq.rows || []).map((r) => (
+                          <tr key={r.id}>
+                            <td className="mono">{formatShortDateTime(r.created_at)}</td>
+                            <td>{r.full_name || ""}</td>
+                            <td className="mono">{r.phone || ""}</td>
+                            <td className="mono">{r.email || ""}</td>
+                            <td>{r.pet_type || ""}</td>
+                            <td>{r.service || ""}</td>
+                            <td className="mono">{r.preferred_date || ""}</td>
+                            <td className="notice" style={{ margin: 0 }}>
+                              {r.message || ""}
+                            </td>
+                          </tr>
+                        ))}
+                        {!inq.loading && (!inq.rows || !inq.rows.length) ? (
+                          <tr>
+                            <td colSpan={8}>
+                              <div className="notice">No inquiries found.</div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+
+                    <div className="cta-row" style={{ marginTop: 10 }}>
+                      <button
+                        className="btn"
+                        type="button"
+                        disabled={inq.loading || busy || inq.page <= 0}
+                        onClick={() => loadInquiries({ page: Math.max(0, inq.page - 1), pageSize: inq.pageSize })}
+                      >
+                        Prev
+                      </button>
+                      <button
+                        className="btn"
+                        type="button"
+                        disabled={inq.loading || busy || !canNext(inq.page, inq.pageSize, inq.total, inq.rows)}
+                        onClick={() => loadInquiries({ page: inq.page + 1, pageSize: inq.pageSize })}
+                      >
+                        Next
+                      </button>
+                      <span className="notice">
+                        Page {inq.page + 1}
+                        {typeof inq.total === "number" ? ` of ${Math.max(1, Math.ceil(inq.total / inq.pageSize))}` : ""}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === "users" && (
+                  <div className="admin-table-wrap">
+                    <div className="admin-toolbar">
+                      <div className="admin-filters">
+                        <label>
+                          Search
+                          <input value={userFilters.q} onChange={(e) => setUserFilters((s) => ({ ...s, q: e.target.value }))} placeholder="User ID or phone…" />
+                        </label>
+                        <label>
+                          Has phone
+                          <select value={userFilters.has_phone} onChange={(e) => setUserFilters((s) => ({ ...s, has_phone: e.target.value }))}>
+                            <option value="">All</option>
+                            <option value="yes">Yes</option>
+                            <option value="no">No</option>
+                          </select>
+                        </label>
+                        <label>
+                          Order
+                          <select value={userFilters.dir} onChange={(e) => setUserFilters((s) => ({ ...s, dir: e.target.value }))}>
+                            <option value="desc">Newest</option>
+                            <option value="asc">Oldest</option>
+                          </select>
+                        </label>
+                        <div className="admin-actions" style={{ alignSelf: "end" }}>
+                          <button className="btn primary" type="button" onClick={() => loadUsers({ page: 0, pageSize: users.pageSize })} disabled={users.loading || busy}>
+                            Apply
+                          </button>
+                        </div>
+                      </div>
+                      <div className="notice">{users.total != null ? `${users.total} total` : `${users.rows.length} loaded`}</div>
+                    </div>
+
+                    <table className="admin-table">
+                      <thead>
+                        <tr>
+                          <th>User ID</th>
+                          <th style={{ width: 160 }}>Phone</th>
+                          <th style={{ width: 170 }}>Created</th>
+                          <th style={{ width: 170 }}>Updated</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(users.rows || []).map((r) => (
+                          <tr key={r.user_id}>
+                            <td className="mono">{r.user_id}</td>
+                            <td className="mono">{r.phone || ""}</td>
+                            <td className="mono">{formatShortDateTime(r.created_at)}</td>
+                            <td className="mono">{formatShortDateTime(r.updated_at)}</td>
+                          </tr>
+                        ))}
+                        {!users.loading && (!users.rows || !users.rows.length) ? (
+                          <tr>
+                            <td colSpan={4}>
+                              <div className="notice">No users found.</div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+
+                    <div className="cta-row" style={{ marginTop: 10 }}>
+                      <button
+                        className="btn"
+                        type="button"
+                        disabled={users.loading || busy || users.page <= 0}
+                        onClick={() => loadUsers({ page: Math.max(0, users.page - 1), pageSize: users.pageSize })}
+                      >
+                        Prev
+                      </button>
+                      <button
+                        className="btn"
+                        type="button"
+                        disabled={users.loading || busy || !canNext(users.page, users.pageSize, users.total, users.rows)}
+                        onClick={() => loadUsers({ page: users.page + 1, pageSize: users.pageSize })}
+                      >
+                        Next
+                      </button>
+                      <span className="notice">
+                        Page {users.page + 1}
+                        {typeof users.total === "number" ? ` of ${Math.max(1, Math.ceil(users.total / users.pageSize))}` : ""}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === "sessions" && (
+                  <div className="admin-table-wrap">
+                    <div className="admin-toolbar">
+                      <div className="admin-filters">
+                        <label>
+                          User ID
+                          <input value={sessionFilters.user_id} onChange={(e) => setSessionFilters((s) => ({ ...s, user_id: e.target.value }))} placeholder="uuid…" />
+                        </label>
+                        <label>
+                          Type
+                          <select value={sessionFilters.event_type} onChange={(e) => setSessionFilters((s) => ({ ...s, event_type: e.target.value }))}>
+                            <option value="">All</option>
+                            <option value="login">login</option>
+                            <option value="logout">logout</option>
+                          </select>
+                        </label>
+                        <label>
+                          Role
+                          <select value={sessionFilters.role} onChange={(e) => setSessionFilters((s) => ({ ...s, role: e.target.value }))}>
+                            <option value="">All</option>
+                            <option value="admin">admin</option>
+                            <option value="user">user</option>
+                          </select>
+                        </label>
+                        <label>
+                          From
+                          <input value={sessionFilters.from} onChange={(e) => setSessionFilters((s) => ({ ...s, from: e.target.value }))} type="date" />
+                        </label>
+                        <label>
+                          To
+                          <input value={sessionFilters.to} onChange={(e) => setSessionFilters((s) => ({ ...s, to: e.target.value }))} type="date" />
+                        </label>
+                        <label>
+                          Order
+                          <select value={sessionFilters.dir} onChange={(e) => setSessionFilters((s) => ({ ...s, dir: e.target.value }))}>
+                            <option value="desc">Newest</option>
+                            <option value="asc">Oldest</option>
+                          </select>
+                        </label>
+                        <div className="admin-actions" style={{ alignSelf: "end" }}>
+                          <button className="btn primary" type="button" onClick={() => loadSessions({ page: 0, pageSize: sessions.pageSize })} disabled={sessions.loading || busy}>
+                            Apply
+                          </button>
+                        </div>
+                      </div>
+                      <div className="notice">{sessions.total != null ? `${sessions.total} total` : `${sessions.rows.length} loaded`}</div>
+                    </div>
+
+                    <table className="admin-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 170 }}>Created</th>
+                          <th>User ID</th>
+                          <th style={{ width: 100 }}>Type</th>
+                          <th style={{ width: 90 }}>Admin</th>
+                          <th style={{ width: 160 }}>TZ</th>
+                          <th>User agent</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(sessions.rows || []).map((s) => (
+                          <tr key={s.id}>
+                            <td className="mono">{formatShortDateTime(s.created_at)}</td>
+                            <td className="mono">{s.user_id}</td>
+                            <td>{s.event_type}</td>
+                            <td>{s.is_admin ? "yes" : "no"}</td>
+                            <td className="mono">{s.tz || ""}</td>
+                            <td className="notice" style={{ margin: 0 }}>
+                              {s.user_agent || ""}
+                            </td>
+                          </tr>
+                        ))}
+                        {!sessions.loading && (!sessions.rows || !sessions.rows.length) ? (
+                          <tr>
+                            <td colSpan={6}>
+                              <div className="notice">No session events found.</div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+
+                    <div className="cta-row" style={{ marginTop: 10 }}>
+                      <button
+                        className="btn"
+                        type="button"
+                        disabled={sessions.loading || busy || sessions.page <= 0}
+                        onClick={() => loadSessions({ page: Math.max(0, sessions.page - 1), pageSize: sessions.pageSize })}
+                      >
+                        Prev
+                      </button>
+                      <button
+                        className="btn"
+                        type="button"
+                        disabled={sessions.loading || busy || !canNext(sessions.page, sessions.pageSize, sessions.total, sessions.rows)}
+                        onClick={() => loadSessions({ page: sessions.page + 1, pageSize: sessions.pageSize })}
+                      >
+                        Next
+                      </button>
+                      <span className="notice">
+                        Page {sessions.page + 1}
+                        {typeof sessions.total === "number" ? ` of ${Math.max(1, Math.ceil(sessions.total / sessions.pageSize))}` : ""}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === "photos" && (
+                  <div className="admin-table-wrap">
+                    <div className="admin-toolbar">
+                      <div className="admin-filters">
+                        <label>
+                          Section
+                          <select value={photoFilters.section} onChange={(e) => setPhotoFilters((s) => ({ ...s, section: e.target.value }))}>
+                            <option value="">All</option>
+                            <option value="hero">hero</option>
+                            <option value="products">products</option>
+                            <option value="tips">tips</option>
+                            <option value="services">services</option>
+                            <option value="contact">contact</option>
+                            <option value="other">other</option>
+                          </select>
+                        </label>
+                        <label>
+                          Search
+                          <input value={photoFilters.q} onChange={(e) => setPhotoFilters((s) => ({ ...s, q: e.target.value }))} placeholder="Title, URL, section…" />
+                        </label>
+                        <label>
+                          Active
+                          <select value={photoFilters.active} onChange={(e) => setPhotoFilters((s) => ({ ...s, active: e.target.value }))}>
+                            <option value="">All</option>
+                            <option value="yes">Active</option>
+                            <option value="no">Inactive</option>
+                          </select>
+                        </label>
+                        <label>
+                          Order
+                          <select value={photoFilters.dir} onChange={(e) => setPhotoFilters((s) => ({ ...s, dir: e.target.value }))}>
+                            <option value="asc">Section + order</option>
+                            <option value="desc">Reverse order</option>
+                          </select>
+                        </label>
+                        <div className="admin-actions" style={{ alignSelf: "end" }}>
+                          <button className="btn primary" type="button" onClick={() => loadPhotos({ page: 0, pageSize: photos.pageSize })} disabled={photos.loading || busy}>
+                            Apply
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="admin-filters" style={{ gridTemplateColumns: "repeat(6, minmax(160px, 1fr))" }}>
+                        <label>
+                          Upload section
+                          <select value={photoDraft.section} onChange={(e) => setPhotoDraft((d) => ({ ...d, section: e.target.value }))}>
+                            <option value="hero">hero</option>
+                            <option value="products">products</option>
+                            <option value="tips">tips</option>
+                            <option value="services">services</option>
+                            <option value="contact">contact</option>
+                            <option value="other">other</option>
+                          </select>
+                        </label>
+                        <label>
+                          Title
+                          <input value={photoDraft.title} onChange={(e) => setPhotoDraft((d) => ({ ...d, title: e.target.value }))} placeholder="Optional title" />
+                        </label>
+                        <label style={{ gridColumn: "span 2" }}>
+                          URL (optional)
+                          <input value={photoDraft.url} onChange={(e) => setPhotoDraft((d) => ({ ...d, url: e.target.value }))} placeholder="Paste an image URL, or upload a file" />
+                        </label>
+                        <label>
+                          Order
+                          <input inputMode="numeric" value={String(photoDraft.sort_order)} onChange={(e) => setPhotoDraft((d) => ({ ...d, sort_order: e.target.value }))} />
+                        </label>
+                        <label>
+                          Active
+                          <select value={photoDraft.is_active ? "yes" : "no"} onChange={(e) => setPhotoDraft((d) => ({ ...d, is_active: e.target.value === "yes" }))}>
+                            <option value="yes">Yes</option>
+                            <option value="no">No</option>
+                          </select>
+                        </label>
+                        <label style={{ gridColumn: "span 2" }}>
+                          File (optional)
+                          <input type="file" accept="image/*" onChange={(e) => setPhotoFile(e.target.files && e.target.files[0] ? e.target.files[0] : null)} />
+                        </label>
+                        <div className="admin-actions" style={{ alignSelf: "end" }}>
+                          <button className="btn primary" type="button" onClick={photoFile ? onUploadAndAddPhoto : onAddPhoto} disabled={busy}>
+                            {photoFile ? "Upload + Add" : "Add"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="notice">
+                        {photos.total != null ? `${photos.total} total` : `${photos.rows.length} loaded`} • Storage bucket: <code>{STORAGE_BUCKET_ID}</code>
+                      </div>
+                    </div>
+
+                    <table className="admin-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 92 }}>Preview</th>
+                          <th style={{ width: 120 }}>Section</th>
+                          <th style={{ width: 180 }}>Title</th>
+                          <th>URL</th>
+                          <th style={{ width: 90 }}>Active</th>
+                          <th style={{ width: 90 }}>Order</th>
+                          <th style={{ width: 170 }}>Updated</th>
+                          <th style={{ width: 200 }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(photos.rows || []).map((p) => (
+                          <tr key={p.id}>
+                            <td>
+                              <div className="photo-preview">{p.url ? <img src={p.url} alt={p.title || "photo"} loading="lazy" /> : null}</div>
+                            </td>
+                            <td>
+                              <select value={p.section || "other"} onChange={(e) => updateLocalPhoto(p.id, "section", e.target.value)}>
+                                <option value="hero">hero</option>
+                                <option value="products">products</option>
+                                <option value="tips">tips</option>
+                                <option value="services">services</option>
+                                <option value="contact">contact</option>
+                                <option value="other">other</option>
+                              </select>
+                            </td>
+                            <td>
+                              <input value={p.title || ""} onChange={(e) => updateLocalPhoto(p.id, "title", e.target.value)} />
+                            </td>
+                            <td>
+                              <input value={p.url || ""} onChange={(e) => updateLocalPhoto(p.id, "url", e.target.value)} placeholder="https://..." />
+                            </td>
+                            <td style={{ textAlign: "center" }}>
+                              <input type="checkbox" checked={!!p.is_active} onChange={(e) => updateLocalPhoto(p.id, "is_active", e.target.checked)} />
+                            </td>
+                            <td>
+                              <input inputMode="numeric" value={String(p.sort_order == null ? "" : p.sort_order)} onChange={(e) => updateLocalPhoto(p.id, "sort_order", e.target.value)} />
+                            </td>
+                            <td className="mono">{formatShortDateTime(p.updated_at)}</td>
+                            <td>
+                              <div className="admin-actions">
+                                <button className="btn primary" type="button" onClick={() => onSavePhoto(p.id)} disabled={busy}>
+                                  Save
+                                </button>
+                                <button className="btn danger" type="button" onClick={() => onDeletePhoto(p.id)} disabled={busy}>
+                                  Delete
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                        {!photos.loading && (!photos.rows || !photos.rows.length) ? (
+                          <tr>
+                            <td colSpan={8}>
+                              <div className="notice">No photos found.</div>
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+
+                    <div className="cta-row" style={{ marginTop: 10 }}>
+                      <button
+                        className="btn"
+                        type="button"
+                        disabled={photos.loading || busy || photos.page <= 0}
+                        onClick={() => loadPhotos({ page: Math.max(0, photos.page - 1), pageSize: photos.pageSize })}
+                      >
+                        Prev
+                      </button>
+                      <button
+                        className="btn"
+                        type="button"
+                        disabled={photos.loading || busy || !canNext(photos.page, photos.pageSize, photos.total, photos.rows)}
+                        onClick={() => loadPhotos({ page: photos.page + 1, pageSize: photos.pageSize })}
+                      >
+                        Next
+                      </button>
+                      <span className="notice">
+                        Page {photos.page + 1}
+                        {typeof photos.total === "number" ? ` of ${Math.max(1, Math.ceil(photos.total / photos.pageSize))}` : ""}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
